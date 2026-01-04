@@ -1,160 +1,159 @@
-#api-rotator-panel {
+#ar-panel {
     margin: 10px 0;
 }
 
-/* 状态栏 */
-.ar-status-bar {
+#ar-panel .ar-row {
     display: flex;
-    justify-content: space-between;
+    flex-direction: row;
     align-items: center;
-    padding: 10px 12px;
-    background: var(--SmartThemeBlurTintColor);
-    border-radius: 8px;
-    margin-bottom: 10px;
+    gap: 10px;
+    margin-bottom: 8px;
     flex-wrap: wrap;
-    gap: 10px;
 }
 
-.ar-toggle {
+#ar-panel .ar-row label {
     display: flex;
     align-items: center;
-    gap: 8px;
-    cursor: pointer;
+    gap: 5px;
     white-space: nowrap;
 }
 
-.ar-current {
-    font-size: 0.9em;
-}
-
-.ar-current strong {
-    color: #4CAF50;
-}
-
-/* 控制栏 */
-.ar-controls {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 10px;
-}
-
-.ar-controls select {
-    flex: 1;
-    padding: 8px 12px;
-    border-radius: 6px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    background: var(--SmartThemeBlurTintColor);
-    color: var(--SmartThemeBodyTextColor);
-}
-
-.ar-controls button {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 14px;
-    white-space: nowrap;
-}
-
-/* 选项 */
-.ar-options {
-    padding: 8px 12px;
-    background: var(--SmartThemeBlurTintColor);
-    border-radius: 6px;
-    margin-bottom: 10px;
-}
-
-.ar-options label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-}
-
-/* 统计 */
-.ar-stats {
+#ar-panel .ar-stats {
     text-align: center;
-    padding: 8px;
-    background: rgba(76, 175, 80, 0.15);
+    padding: 6px;
+    background: rgba(76,175,80,0.2);
     border-radius: 6px;
-    margin-bottom: 10px;
-    font-size: 0.9em;
+    margin-bottom: 8px;
     color: #4CAF50;
 }
 
-/* 列表 */
-.ar-list {
-    max-height: 300px;
+#ar-panel .ar-wide {
+    width: 100%;
+    margin-bottom: 8px;
+}
+
+#ar-panel .ar-list {
+    max-height: 350px;
     overflow-y: auto;
     margin-bottom: 10px;
 }
 
-.ar-empty {
+#ar-panel .ar-empty {
     text-align: center;
-    padding: 30px;
+    padding: 20px;
     opacity: 0.5;
 }
 
-.ar-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 12px;
-    margin-bottom: 8px;
+#ar-panel .ar-item {
     background: var(--SmartThemeBlurTintColor);
-    border-radius: 8px;
     border: 2px solid transparent;
-    transition: all 0.2s;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 8px;
 }
 
-.ar-item:hover {
-    background: var(--SmartThemeBlurTintStrength);
-}
-
-.ar-item.current {
+#ar-panel .ar-item.ar-cur {
     border-color: #4CAF50;
-    background: rgba(76, 175, 80, 0.1);
+    background: rgba(76,175,80,0.1);
 }
 
-.ar-item.disabled {
+#ar-panel .ar-item.ar-off {
     opacity: 0.5;
 }
 
-.ar-item-left {
+#ar-panel .ar-item-top {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
+    margin-bottom: 8px;
+}
+
+#ar-panel .ar-info {
     flex: 1;
     min-width: 0;
 }
 
-.ar-item-toggle {
-    width: 18px;
-    height: 18px;
-    flex-shrink: 0;
-}
-
-.ar-item-info {
-    min-width: 0;
-    flex: 1;
-}
-
-.ar-item-name {
+#ar-panel .ar-name {
     font-weight: bold;
-    margin-bottom: 2px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    word-break: break-all;
 }
 
-.ar-item-url {
+#ar-panel .ar-url {
     font-size: 0.8em;
     opacity: 0.6;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    word-break: break-all;
+}
+
+#ar-panel .ar-model-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+#ar-panel .ar-model-row span {
     white-space: nowrap;
 }
 
-.ar-item-model {
-    font-size: 0.75em;
-    color: #4CAF50;
-    margin-top: 2px;
+#ar-panel .ar-model-sel {
+    flex: 1;
+    min-width: 100px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    color: var(--SmartThemeBodyTextColor);
+}
+
+#ar-panel .ar-btns {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+#ar-panel .ar-btns .menu_button {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 5px 10px;
+    white-space: nowrap;
+    min-width: auto;
+}
+
+#ar-panel .ar-form {
+    background: var(--SmartThemeBlurTintColor);
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
+
+#ar-panel .ar-form input,
+#ar-panel .ar-form select {
+    width: 100%;
+    padding: 8px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyTextColor);
+    box-sizing: border-box;
+}
+
+#ar-panel .ar-form .ar-row input {
+    flex: 1;
+    margin-bottom: 0;
+}
+
+#ar-panel .menu_button {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    white-space: nowrap;
+}

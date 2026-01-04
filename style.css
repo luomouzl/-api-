@@ -16,15 +16,36 @@
     align-items: center;
     gap: 5px;
     white-space: nowrap;
+    cursor: pointer;
+}
+
+#ar-panel .ar-section-title {
+    font-weight: bold;
+    margin: 12px 0 6px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    font-size: 0.9em;
+    opacity: 0.8;
+}
+
+#ar-panel .ar-select {
+    flex: 1;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor);
+    color: var(--SmartThemeBodyTextColor);
+    min-width: 120px;
 }
 
 #ar-panel .ar-stats {
     text-align: center;
-    padding: 6px;
+    padding: 8px;
     background: rgba(76,175,80,0.2);
     border-radius: 6px;
     margin-bottom: 8px;
     color: #4CAF50;
+    font-weight: bold;
 }
 
 #ar-panel .ar-wide {
@@ -156,4 +177,11 @@
     justify-content: center;
     gap: 5px;
     white-space: nowrap;
+}
+
+/* 弹窗样式优化 */
+.toast-top-center {
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
 }

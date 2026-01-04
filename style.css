@@ -1,0 +1,110 @@
+#multi-api-switcher-panel {
+    margin: 10px 0;
+}
+
+.api-switcher-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 5px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.api-switcher-status strong {
+    color: #4CAF50;
+}
+
+.api-list-box {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.api-item {
+    display: flex;
+    align-items: center;
+    padding: 10px;
+    margin: 5px 0;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 5px;
+    gap: 10px;
+}
+
+.api-item.current {
+    border: 2px solid #4CAF50;
+    background: rgba(76, 175, 80, 0.1);
+}
+
+.api-item.disabled {
+    opacity: 0.5;
+}
+
+.api-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.api-item-name {
+    font-weight: bold;
+    margin-bottom: 3px;
+}
+
+.api-item-endpoint {
+    font-size: 0.85em;
+    opacity: 0.7;
+    word-break: break-all;
+}
+
+.api-item-actions {
+    display: flex;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.api-item-actions button {
+    padding: 5px 10px;
+}
+
+.api-add-form {
+    padding: 15px;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 5px;
+    margin-top: 10px;
+}
+
+.api-add-form input {
+    width: 100%;
+    padding: 8px;
+    margin: 5px 0 10px 0;
+    border-radius: 5px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBodyColor);
+    color: var(--SmartThemeBodyTextColor);
+    box-sizing: border-box;
+}
+
+.api-add-form label {
+    font-weight: bold;
+}
+
+.api-add-form-buttons {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.api-settings-section {
+    padding: 10px;
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 5px;
+    margin: 10px 0;
+}
+
+.api-settings-section label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+}

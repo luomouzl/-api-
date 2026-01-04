@@ -137,11 +137,6 @@
 }
 
 #ar-panel .ar-btns .menu_button {
-    display: inline-flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
     padding: 5px 10px;
     white-space: nowrap;
     min-width: auto;
@@ -169,24 +164,6 @@
 #ar-panel .ar-form .ar-row input {
     flex: 1;
     margin-bottom: 0;
-}
-
-#ar-panel .menu_button {
-    display: inline-flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    white-space: nowrap;
-}
-
-#ar-panel .ar-hint {
-    font-size: 0.8em;
-    opacity: 0.6;
-    text-align: center;
-    padding: 8px;
-    border-top: 1px dashed var(--SmartThemeBorderColor);
-    margin-top: 10px;
 }
 
 .toast-top-center {

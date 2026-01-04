@@ -1,11 +1,12 @@
 {
-    "display_name": "多API轮换",
-    "loading_order": 100,
+    "display_name": "API轮询切换器",
+    "loading_order": 1,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "Assistant",
-    "version": "2.0.0",
-    "description": "管理多个API，支持测试连接、模型选择、一键切换"
+    "author": "User",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false
 }

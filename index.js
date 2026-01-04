@@ -6,14 +6,15 @@ const defaultSettings = {
     apiList: [],
     currentIndex: 0,
     enabled: true,
-    switchMode: "every-request",  // "every-request" 每次切换 | "on-error" 失败才切换
-    rotateMode: "round-robin",    // "round-robin" 顺序 | "random" 随机
-    autoSwitch: true,             // 失败自动切换
-    showNotification: true,       // 显示弹窗提示
-    maxRetries: 3                 // 最大重试次数
+    switchMode: "every-request",
+    rotateMode: "round-robin",
+    autoSwitch: true,
+    showNotification: true,
+    retryPerAPI: 1,      // 每个API失败后重试次数
+    maxAPIRetries: 3     // 最多尝试几个不同的API
 };
 
-let lastUsedIndex = -1;  // 记录上次使用的索引，避免重复
+let lastUsedIndex = -1;
 
 function loadSettings() {
     if (!extension_settings[extensionName]) {
@@ -45,7 +46,6 @@ function getCurrentAPI() {
     return list[s.currentIndex % list.length];
 }
 
-// 获取下一个API（用于轮询模式）
 function getNextAPI() {
     const s = getSettings();
     const list = getEnabledAPIs();
@@ -58,14 +58,12 @@ function getNextAPI() {
     }
     
     if (s.rotateMode === "random") {
-        // 随机模式，但避免连续使用同一个
         let newIndex;
         do {
             newIndex = Math.floor(Math.random() * list.length);
         } while (newIndex === lastUsedIndex && list.length > 1);
         s.currentIndex = newIndex;
     } else {
-        // 顺序轮询
         s.currentIndex = (s.currentIndex + 1) % list.length;
     }
     
@@ -74,7 +72,6 @@ function getNextAPI() {
     return list[s.currentIndex];
 }
 
-// 切换到下一个（用于失败重试）
 function switchToNextAPI() {
     const s = getSettings();
     const list = getEnabledAPIs();
@@ -87,7 +84,6 @@ function switchToNextAPI() {
     return list[s.currentIndex];
 }
 
-// 获取API（根据模式）
 function getAPIForRequest() {
     const s = getSettings();
     if (s.switchMode === "every-request") {
@@ -293,17 +289,39 @@ function importConfig(file) {
     reader.readAsText(file);
 }
 
-// 显示API使用通知
-function showAPINotification(api) {
+function showAPINotification(api, retryInfo) {
     const s = getSettings();
     if (!s.showNotification) return;
     
     const modelInfo = api.model ? ` [${api.model}]` : "";
-    toastr.info(`🔄 ${api.name}${modelInfo}`, "正在使用", {
+    const retryText = retryInfo ? ` (${retryInfo})` : "";
+    toastr.info(`🔄 ${api.name}${modelInfo}${retryText}`, "正在使用", {
         timeOut: 2000,
         positionClass: "toast-top-center",
-        preventDuplicates: true
+        preventDuplicates: false
     });
+}
+
+// 执行单次请求
+async function doRequest(originalFetch, url, options, api) {
+    const base = api.endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
+    const urlStr = url.toString();
+    const path = urlStr.includes("/v1/chat/completions") ? "/v1/chat/completions" : "/v1/completions";
+    const newUrl = base + path;
+    
+    const newOpts = JSON.parse(JSON.stringify(options || {}));
+    newOpts.headers = newOpts.headers || {};
+    if (api.apiKey) newOpts.headers["Authorization"] = "Bearer " + api.apiKey;
+    
+    if (api.model && newOpts.body) {
+        try {
+            const body = JSON.parse(newOpts.body);
+            body.model = api.model;
+            newOpts.body = JSON.stringify(body);
+        } catch (e) {}
+    }
+    
+    return await originalFetch.call(window, newUrl, newOpts);
 }
 
 function setupInterceptor() {
@@ -321,88 +339,98 @@ function setupInterceptor() {
         const list = getEnabledAPIs();
         if (list.length === 0) return originalFetch.apply(this, arguments);
         
-        // 根据模式获取API
         let api = getAPIForRequest();
         if (!api) return originalFetch.apply(this, arguments);
         
-        // 记录尝试过的API，避免无限循环
         const triedAPIs = new Set();
-        let retryCount = 0;
-        const maxRetries = Math.min(s.maxRetries || 3, list.length);
+        const maxAPIRetries = Math.min(s.maxAPIRetries || 3, list.length);
+        let apiSwitchCount = 0;
         
-        while (retryCount < maxRetries) {
-            try {
-                const base = api.endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
-                const path = urlStr.includes("/v1/chat/completions") ? "/v1/chat/completions" : "/v1/completions";
-                const newUrl = base + path;
-                
-                const newOpts = JSON.parse(JSON.stringify(options || {}));
-                newOpts.headers = newOpts.headers || {};
-                if (api.apiKey) newOpts.headers["Authorization"] = "Bearer " + api.apiKey;
-                
-                if (api.model && newOpts.body) {
-                    try {
-                        const body = JSON.parse(newOpts.body);
-                        body.model = api.model;
-                        newOpts.body = JSON.stringify(body);
-                    } catch (e) {}
-                }
-                
-                console.log("[API轮询] 使用: " + api.name + (api.model ? " (" + api.model + ")" : ""));
-                
-                // 更新UI显示
-                const el = document.getElementById("ar-current");
-                if (el) el.textContent = api.name + (api.model ? " (" + api.model + ")" : "");
-                
-                // 显示弹窗通知
-                showAPINotification(api);
-                
-                const res = await originalFetch.call(this, newUrl, newOpts);
-                
-                // 请求成功
-                if (res.ok) {
-                    return res;
-                }
-                
-                // 请求失败，尝试切换
-                console.warn("[API轮询] " + api.name + " 返回错误: " + res.status);
-                triedAPIs.add(api.id);
-                
-                if (s.autoSwitch && list.length > 1) {
-                    // 找一个没试过的API
-                    const nextApi = switchToNextAPI();
-                    if (nextApi && !triedAPIs.has(nextApi.id)) {
-                        toastr.warning(`${api.name} 失败(${res.status})，切换到 ${nextApi.name}`, "", { timeOut: 2000 });
-                        api = nextApi;
-                        retryCount++;
+        while (apiSwitchCount < maxAPIRetries) {
+            const retryPerAPI = s.retryPerAPI || 1;
+            let currentRetry = 0;
+            
+            // 对当前API尝试多次
+            while (currentRetry <= retryPerAPI) {
+                try {
+                    const isRetry = currentRetry > 0;
+                    const retryInfo = isRetry ? `重试 ${currentRetry}/${retryPerAPI}` : null;
+                    
+                    console.log(`[API轮询] ${api.name}${isRetry ? ' (重试' + currentRetry + ')' : ''}`);
+                    
+                    // 更新UI
+                    const el = document.getElementById("ar-current");
+                    if (el) el.textContent = api.name + (api.model ? " (" + api.model + ")" : "") + (isRetry ? " 重试中..." : "");
+                    
+                    // 显示通知
+                    showAPINotification(api, retryInfo);
+                    
+                    const res = await doRequest(originalFetch, url, options, api);
+                    
+                    if (res.ok) {
+                        // 成功，更新UI并返回
+                        if (el) el.textContent = api.name + (api.model ? " (" + api.model + ")" : "");
+                        return res;
+                    }
+                    
+                    // 请求失败
+                    console.warn(`[API轮询] ${api.name} 返回错误: ${res.status}`);
+                    
+                    if (currentRetry < retryPerAPI) {
+                        // 还有重试次数，继续重试当前API
+                        toastr.warning(`${api.name} 失败(${res.status})，正在重试...`, "", { timeOut: 1500 });
+                        currentRetry++;
+                        // 等待一小段时间再重试
+                        await new Promise(r => setTimeout(r, 500));
                         continue;
                     }
-                }
-                
-                // 没有更多API可试，返回原始响应
-                return res;
-                
-            } catch (e) {
-                console.error("[API轮询] " + api.name + " 出错:", e);
-                triedAPIs.add(api.id);
-                
-                if (s.autoSwitch && list.length > 1 && retryCount < maxRetries - 1) {
-                    const nextApi = switchToNextAPI();
-                    if (nextApi && !triedAPIs.has(nextApi.id)) {
-                        toastr.warning(`${api.name} 出错，切换到 ${nextApi.name}`, "", { timeOut: 2000 });
-                        api = nextApi;
-                        retryCount++;
+                    
+                    // 当前API重试次数用完，准备切换
+                    break;
+                    
+                } catch (e) {
+                    console.error(`[API轮询] ${api.name} 出错:`, e);
+                    
+                    if (currentRetry < retryPerAPI) {
+                        toastr.warning(`${api.name} 出错，正在重试...`, "", { timeOut: 1500 });
+                        currentRetry++;
+                        await new Promise(r => setTimeout(r, 500));
                         continue;
                     }
+                    
+                    break;
                 }
-                
-                throw e;
+            }
+            
+            // 当前API彻底失败，尝试切换
+            triedAPIs.add(api.id);
+            apiSwitchCount++;
+            
+            if (!s.autoSwitch || list.length <= 1) {
+                toastr.error(`${api.name} 请求失败`);
+                throw new Error(`${api.name} 请求失败`);
+            }
+            
+            // 找下一个没试过的API
+            let foundNext = false;
+            for (let i = 0; i < list.length; i++) {
+                const nextApi = switchToNextAPI();
+                if (!triedAPIs.has(nextApi.id)) {
+                    toastr.warning(`${api.name} 失败，切换到 ${nextApi.name}`, "", { timeOut: 2000 });
+                    api = nextApi;
+                    foundNext = true;
+                    break;
+                }
+            }
+            
+            if (!foundNext) {
+                toastr.error("所有API都已尝试，全部失败");
+                throw new Error("所有API都失败");
             }
         }
         
-        // 所有重试都失败
-        toastr.error("所有API都失败了");
-        throw new Error("所有API都失败");
+        toastr.error("超过最大重试次数");
+        throw new Error("超过最大重试次数");
     };
 }
 
@@ -442,8 +470,32 @@ function createUI() {
                 <button id="ar-next" class="menu_button">⏭ 下一个</button>
             </div>
             
+            <div class="ar-section-title">重试设置</div>
             <div class="ar-row">
-                <label><input type="checkbox" id="ar-auto"> 失败自动重试</label>
+                <label>
+                    <input type="checkbox" id="ar-auto"> 失败自动切换API
+                </label>
+            </div>
+            <div class="ar-row">
+                <span>同一API重试次数:</span>
+                <select id="ar-retry-per" class="ar-select-small">
+                    <option value="0">0次（直接切换）</option>
+                    <option value="1">1次</option>
+                    <option value="2">2次</option>
+                    <option value="3">3次</option>
+                </select>
+            </div>
+            <div class="ar-row">
+                <span>最多尝试API数:</span>
+                <select id="ar-max-api" class="ar-select-small">
+                    <option value="2">2个</option>
+                    <option value="3">3个</option>
+                    <option value="5">5个</option>
+                    <option value="10">全部</option>
+                </select>
+            </div>
+            
+            <div class="ar-row">
                 <label><input type="checkbox" id="ar-notify"> 显示切换提示</label>
             </div>
             
@@ -497,13 +549,20 @@ function updateUI() {
     const notify = document.getElementById("ar-notify");
     if (notify) notify.checked = s.showNotification;
     
+    const retryPer = document.getElementById("ar-retry-per");
+    if (retryPer) retryPer.value = s.retryPerAPI.toString();
+    
+    const maxAPI = document.getElementById("ar-max-api");
+    if (maxAPI) maxAPI.value = s.maxAPIRetries.toString();
+    
     const curEl = document.getElementById("ar-current");
     if (curEl) curEl.textContent = cur ? cur.name + (cur.model ? " (" + cur.model + ")" : "") : "无";
     
     const stats = document.getElementById("ar-stats");
     if (stats) {
         const modeText = s.switchMode === "every-request" ? "每次切换" : "固定模式";
-        stats.textContent = `${list.length}/${s.apiList.length} 已启用 | ${modeText}`;
+        const retryText = `失败重试${s.retryPerAPI}次`;
+        stats.textContent = `${list.length}/${s.apiList.length} 已启用 | ${modeText} | ${retryText}`;
     }
     
     const listEl = document.getElementById("ar-list");
@@ -591,6 +650,19 @@ function bindEvents() {
         s.showNotification = e.target.checked;
         saveSettings();
         toastr.info(s.showNotification ? "切换提示已开启" : "切换提示已关闭");
+    });
+    
+    document.getElementById("ar-retry-per")?.addEventListener("change", e => {
+        s.retryPerAPI = parseInt(e.target.value) || 1;
+        saveSettings();
+        updateUI();
+        toastr.info(`同一API失败后重试 ${s.retryPerAPI} 次`);
+    });
+    
+    document.getElementById("ar-max-api")?.addEventListener("change", e => {
+        s.maxAPIRetries = parseInt(e.target.value) || 3;
+        saveSettings();
+        toastr.info(`最多尝试 ${s.maxAPIRetries} 个API`);
     });
     
     document.getElementById("ar-next")?.addEventListener("click", switchNext);

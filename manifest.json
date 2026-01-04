@@ -6,6 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "User",
-    "version": "1.0.0",
-    "description": "管理多个API并支持轮询切换和模型选择"
+    "version": "2.0.0",
+    "homePage": "",
+    "auto_update": false
 }

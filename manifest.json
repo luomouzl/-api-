@@ -1,0 +1,11 @@
+{
+    "display_name": "多API轮换",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "你的名字",
+    "version": "1.0.0",
+    "description": "管理多个API并支持一键切换"
+}

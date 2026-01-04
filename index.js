@@ -7,7 +7,7 @@ const defaultSettings = {
     apiList: [],
     currentIndex: 0,
     enabled: true,
-    mode: "round-robin", // round-robin | random
+    mode: "round-robin",
     autoSwitchOnError: true,
     showNotification: true
 };
@@ -65,6 +65,29 @@ function getNextAPI() {
     return selected;
 }
 
+// ========== 获取模型列表 ==========
+async function fetchModels(api) {
+    try {
+        const testUrl = api.endpoint.replace(/\/+$/, "") + "/v1/models";
+        const response = await fetch(testUrl, {
+            method: "GET",
+            headers: api.apiKey ? { "Authorization": `Bearer ${api.apiKey}` } : {}
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            if (data.data && Array.isArray(data.data)) {
+                return data.data.map(m => m.id).sort();
+            }
+        }
+        return [];
+    } catch (e) {
+        console.error("获取模型列表失败:", e);
+        return [];
+    }
+}
+
+// ========== 应用API配置 ==========
 function applyAPI(api) {
     if (!api) return;
 
@@ -82,11 +105,57 @@ function applyAPI(api) {
         keyInput.dispatchEvent(new Event("input", { bubbles: true }));
     }
 
+    // 设置模型（如果有指定）
+    if (api.model) {
+        setTimeout(() => {
+            setModel(api.model);
+        }, 200);
+    }
+
     // 点击连接按钮
     setTimeout(() => {
         const connectBtn = document.getElementById("api_button_openai");
         if (connectBtn) connectBtn.click();
     }, 100);
+}
+
+// 设置模型
+function setModel(modelName) {
+    // 尝试多种方式设置模型
+    
+    // 方式1: 直接设置输入框
+    const modelInput = document.getElementById("model_openai_select");
+    if (modelInput) {
+        modelInput.value = modelName;
+        modelInput.dispatchEvent(new Event("change", { bubbles: true }));
+        return;
+    }
+
+    // 方式2: 自定义模型输入框
+    const customModelInput = document.getElementById("custom_model_id");
+    if (customModelInput) {
+        customModelInput.value = modelName;
+        customModelInput.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+    }
+
+    // 方式3: 查找下拉选择框
+    const modelSelect = document.querySelector('select[name="model"], #model_openai_select, [data-model-select]');
+    if (modelSelect) {
+        // 检查选项是否存在
+        const option = Array.from(modelSelect.options).find(opt => opt.value === modelName);
+        if (option) {
+            modelSelect.value = modelName;
+        } else {
+            // 添加新选项
+            const newOption = document.createElement("option");
+            newOption.value = modelName;
+            newOption.textContent = modelName;
+            modelSelect.appendChild(newOption);
+            modelSelect.value = modelName;
+        }
+        modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
 }
 
 function switchToNext() {
@@ -118,18 +187,29 @@ function useAPI(id) {
     }
 }
 
-function addAPI(name, endpoint, apiKey) {
+function addAPI(name, endpoint, apiKey, model) {
     const settings = getSettings();
     settings.apiList.push({
         id: Date.now().toString(),
         name: name,
         endpoint: endpoint,
         apiKey: apiKey,
+        model: model || "",
         enabled: true
     });
     saveSettings();
     updateUI();
     toastr.success(`已添加: ${name}`);
+}
+
+function updateAPI(id, data) {
+    const settings = getSettings();
+    const api = settings.apiList.find(a => a.id === id);
+    if (api) {
+        Object.assign(api, data);
+        saveSettings();
+        updateUI();
+    }
 }
 
 function deleteAPI(id) {
@@ -152,7 +232,6 @@ function toggleAPIEnabled(id) {
     const api = settings.apiList.find(api => api.id === id);
     if (api) {
         api.enabled = !api.enabled;
-        // 重新计算索引
         if (settings.currentIndex >= getEnabledAPIs().length) {
             settings.currentIndex = 0;
         }
@@ -169,7 +248,6 @@ function moveAPI(id, direction) {
     const newIndex = direction === "up" ? index - 1 : index + 1;
     if (newIndex < 0 || newIndex >= settings.apiList.length) return;
 
-    // 交换位置
     [settings.apiList[index], settings.apiList[newIndex]] = 
     [settings.apiList[newIndex], settings.apiList[index]];
 
@@ -179,24 +257,19 @@ function moveAPI(id, direction) {
 
 async function testAPI(api) {
     try {
-        const testUrl = api.endpoint.replace(/\/+$/, "") + "/v1/models";
-        const response = await fetch(testUrl, {
-            method: "GET",
-            headers: api.apiKey ? { "Authorization": `Bearer ${api.apiKey}` } : {}
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            const modelCount = data.data ? data.data.length : 0;
-            toastr.success(`✅ ${api.name} 连接成功！发现 ${modelCount} 个模型`);
-            return true;
+        toastr.info(`正在测试 ${api.name}...`);
+        const models = await fetchModels(api);
+        
+        if (models.length > 0) {
+            toastr.success(`✅ ${api.name} 连接成功！发现 ${models.length} 个模型`);
+            return { success: true, models };
         } else {
-            toastr.error(`❌ ${api.name} 连接失败: ${response.status}`);
-            return false;
+            toastr.warning(`⚠️ ${api.name} 连接成功但未发现模型`);
+            return { success: true, models: [] };
         }
     } catch (e) {
         toastr.error(`❌ ${api.name} 连接错误: ${e.message}`);
-        return false;
+        return { success: false, models: [] };
     }
 }
 
@@ -210,6 +283,7 @@ function exportConfig() {
             name: api.name,
             endpoint: api.endpoint,
             apiKey: api.apiKey,
+            model: api.model,
             enabled: api.enabled
         }))
     };
@@ -234,7 +308,6 @@ function importConfig(file) {
                 let importCount = 0;
 
                 data.apiList.forEach(api => {
-                    // 检查是否已存在
                     const exists = settings.apiList.some(
                         a => a.endpoint === api.endpoint && a.name === api.name
                     );
@@ -244,6 +317,7 @@ function importConfig(file) {
                             name: api.name,
                             endpoint: api.endpoint,
                             apiKey: api.apiKey,
+                            model: api.model || "",
                             enabled: api.enabled !== false
                         });
                         importCount++;
@@ -263,52 +337,43 @@ function importConfig(file) {
     reader.readAsText(file);
 }
 
-// ========== 请求拦截（自动轮询） ==========
+// ========== 请求拦截 ==========
 function setupRequestInterceptor() {
     const originalFetch = window.fetch;
 
     window.fetch = async function(url, options = {}) {
         const settings = getSettings();
 
-        // 检查是否启用轮询
         if (!settings.enabled || getEnabledAPIs().length === 0) {
             return originalFetch.apply(this, arguments);
         }
 
-        // 检测是否是AI API请求
         const urlStr = url.toString();
         const isAPIRequest = 
             urlStr.includes("/v1/chat/completions") ||
             urlStr.includes("/v1/completions") ||
-            urlStr.includes("/v1/messages") ||
-            urlStr.includes("/api/v1/generate");
+            urlStr.includes("/v1/messages");
 
         if (!isAPIRequest) {
             return originalFetch.apply(this, arguments);
         }
 
-        // 获取下一个API
         const api = getNextAPI();
         if (!api) {
             return originalFetch.apply(this, arguments);
         }
 
-        // 构建新请求
         try {
-            // 提取路径
             let path = "";
             if (urlStr.includes("/v1/chat/completions")) path = "/v1/chat/completions";
             else if (urlStr.includes("/v1/completions")) path = "/v1/completions";
             else if (urlStr.includes("/v1/messages")) path = "/v1/messages";
-            else if (urlStr.includes("/api/v1/generate")) path = "/api/v1/generate";
 
             const newUrl = api.endpoint.replace(/\/+$/, "") + path;
 
-            // 复制并修改headers
             const newOptions = JSON.parse(JSON.stringify(options));
             if (!newOptions.headers) newOptions.headers = {};
 
-            // 处理Headers对象
             if (options.headers instanceof Headers) {
                 options.headers.forEach((value, key) => {
                     newOptions.headers[key] = value;
@@ -319,20 +384,26 @@ function setupRequestInterceptor() {
                 newOptions.headers["Authorization"] = `Bearer ${api.apiKey}`;
             }
 
-            console.log(`[API轮询] 使用: ${api.name}`);
+            // 如果指定了模型，替换请求体中的模型
+            if (api.model && newOptions.body) {
+                try {
+                    const body = JSON.parse(newOptions.body);
+                    body.model = api.model;
+                    newOptions.body = JSON.stringify(body);
+                } catch (e) {}
+            }
+
+            console.log(`[API轮询] 使用: ${api.name}${api.model ? ` (${api.model})` : ""}`);
             
             if (settings.showNotification) {
                 updateCurrentDisplay(api.name);
             }
 
-            // 发送请求
             const response = await originalFetch.call(this, newUrl, newOptions);
 
-            // 如果请求失败且开启了自动切换
             if (!response.ok && settings.autoSwitchOnError && getEnabledAPIs().length > 1) {
                 console.log(`[API轮询] ${api.name} 请求失败，尝试下一个...`);
                 toastr.warning(`${api.name} 请求失败，正在切换...`);
-                // 递归调用，使用下一个API
                 return window.fetch(url, options);
             }
 
@@ -340,7 +411,6 @@ function setupRequestInterceptor() {
         } catch (e) {
             console.error(`[API轮询] 请求错误:`, e);
             
-            // 如果出错且开启了自动切换
             if (settings.autoSwitchOnError && getEnabledAPIs().length > 1) {
                 toastr.warning(`${api.name} 连接失败，正在切换...`);
                 return window.fetch(url, options);
@@ -411,14 +481,25 @@ function createUI() {
 
                 <!-- 添加表单 -->
                 <div id="api-add-form" class="api-add-form" style="display:none;">
-                    <label>名称</label>
+                    <label>名称 <span class="required">*</span></label>
                     <input type="text" id="input-name" placeholder="例如：中转站A">
 
-                    <label>API地址</label>
+                    <label>API地址 <span class="required">*</span></label>
                     <input type="text" id="input-endpoint" placeholder="https://api.example.com/v1">
 
                     <label>API Key</label>
                     <input type="password" id="input-apikey" placeholder="sk-xxx">
+
+                    <label>模型 <span class="optional">(可选，留空则使用酒馆设置)</span></label>
+                    <div class="model-input-group">
+                        <input type="text" id="input-model" placeholder="例如：gpt-4o-mini">
+                        <button id="btn-fetch-models" class="menu_button" title="获取模型列表">
+                            <i class="fa-solid fa-list"></i>
+                        </button>
+                    </div>
+                    <select id="select-model" class="model-select" style="display:none;">
+                        <option value="">-- 选择模型 --</option>
+                    </select>
 
                     <div class="form-buttons">
                         <button id="btn-test-new" class="menu_button">
@@ -430,6 +511,43 @@ function createUI() {
                         <button id="btn-cancel-add" class="menu_button">
                             <i class="fa-solid fa-times"></i> 取消
                         </button>
+                    </div>
+                </div>
+
+                <!-- 编辑表单（弹窗） -->
+                <div id="api-edit-modal" class="api-edit-modal" style="display:none;">
+                    <div class="modal-content">
+                        <h4>编辑API</h4>
+                        <input type="hidden" id="edit-id">
+                        
+                        <label>名称</label>
+                        <input type="text" id="edit-name">
+
+                        <label>API地址</label>
+                        <input type="text" id="edit-endpoint">
+
+                        <label>API Key</label>
+                        <input type="password" id="edit-apikey">
+
+                        <label>模型</label>
+                        <div class="model-input-group">
+                            <input type="text" id="edit-model" placeholder="留空使用酒馆设置">
+                            <button id="btn-edit-fetch-models" class="menu_button" title="获取模型列表">
+                                <i class="fa-solid fa-list"></i>
+                            </button>
+                        </div>
+                        <select id="edit-select-model" class="model-select" style="display:none;">
+                            <option value="">-- 选择模型 --</option>
+                        </select>
+
+                        <div class="form-buttons">
+                            <button id="btn-save-edit" class="menu_button">
+                                <i class="fa-solid fa-check"></i> 保存
+                            </button>
+                            <button id="btn-cancel-edit" class="menu_button">
+                                <i class="fa-solid fa-times"></i> 取消
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -458,19 +576,20 @@ function updateUI() {
     const currentAPI = getCurrentAPI();
     const enabledList = getEnabledAPIs();
 
-    // 更新当前API显示
     const nameEl = document.getElementById("current-api-name");
     if (nameEl) {
-        nameEl.textContent = currentAPI ? currentAPI.name : "未配置";
+        if (currentAPI) {
+            nameEl.textContent = currentAPI.name + (currentAPI.model ? ` (${currentAPI.model})` : "");
+        } else {
+            nameEl.textContent = "未配置";
+        }
     }
 
-    // 更新统计
     const statsEl = document.getElementById("rotator-stats");
     if (statsEl) {
         statsEl.textContent = `已启用 ${enabledList.length}/${settings.apiList.length} 个API`;
     }
 
-    // 更新列表
     const listContainer = document.getElementById("api-list-container");
     if (listContainer) {
         if (settings.apiList.length === 0) {
@@ -489,11 +608,15 @@ function updateUI() {
                         <div class="api-item-info">
                             <div class="api-item-name">${isCurrent ? "▶ " : ""}${escapeHtml(api.name)}</div>
                             <div class="api-item-endpoint">${escapeHtml(api.endpoint)}</div>
+                            ${api.model ? `<div class="api-item-model">模型: ${escapeHtml(api.model)}</div>` : ""}
                         </div>
                     </div>
                     <div class="api-item-actions">
                         <button class="menu_button btn-use" title="使用此API" ${!isEnabled ? "disabled" : ""}>
                             <i class="fa-solid fa-play"></i>
+                        </button>
+                        <button class="menu_button btn-edit" title="编辑">
+                            <i class="fa-solid fa-pen"></i>
                         </button>
                         <button class="menu_button btn-test" title="测试连接">
                             <i class="fa-solid fa-plug"></i>
@@ -533,6 +656,59 @@ function clearForm() {
     document.getElementById("input-name").value = "";
     document.getElementById("input-endpoint").value = "";
     document.getElementById("input-apikey").value = "";
+    document.getElementById("input-model").value = "";
+    document.getElementById("select-model").style.display = "none";
+    document.getElementById("select-model").innerHTML = '<option value="">-- 选择模型 --</option>';
+}
+
+function openEditModal(id) {
+    const settings = getSettings();
+    const api = settings.apiList.find(a => a.id === id);
+    if (!api) return;
+
+    document.getElementById("edit-id").value = id;
+    document.getElementById("edit-name").value = api.name;
+    document.getElementById("edit-endpoint").value = api.endpoint;
+    document.getElementById("edit-apikey").value = api.apiKey || "";
+    document.getElementById("edit-model").value = api.model || "";
+    document.getElementById("edit-select-model").style.display = "none";
+    
+    document.getElementById("api-edit-modal").style.display = "flex";
+}
+
+function closeEditModal() {
+    document.getElementById("api-edit-modal").style.display = "none";
+}
+
+async function loadModelsToSelect(selectId, inputId, endpoint, apiKey) {
+    const select = document.getElementById(selectId);
+    const input = document.getElementById(inputId);
+    
+    toastr.info("正在获取模型列表...");
+    
+    const models = await fetchModels({ endpoint, apiKey });
+    
+    if (models.length === 0) {
+        toastr.warning("未获取到模型列表");
+        return;
+    }
+
+    select.innerHTML = '<option value="">-- 选择模型 --</option>';
+    models.forEach(model => {
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = model;
+        select.appendChild(option);
+    });
+
+    select.style.display = "block";
+    select.onchange = () => {
+        if (select.value) {
+            input.value = select.value;
+        }
+    };
+
+    toastr.success(`获取到 ${models.length} 个模型`);
 }
 
 function bindEvents() {
@@ -580,6 +756,19 @@ function bindEvents() {
         clearForm();
     });
 
+    // 获取模型列表（添加表单）
+    document.getElementById("btn-fetch-models")?.addEventListener("click", async () => {
+        const endpoint = document.getElementById("input-endpoint").value.trim();
+        const apiKey = document.getElementById("input-apikey").value.trim();
+        
+        if (!endpoint) {
+            toastr.error("请先填写API地址");
+            return;
+        }
+
+        await loadModelsToSelect("select-model", "input-model", endpoint, apiKey);
+    });
+
     // 测试新API
     document.getElementById("btn-test-new")?.addEventListener("click", async () => {
         const name = document.getElementById("input-name").value.trim() || "新API";
@@ -591,73 +780,18 @@ function bindEvents() {
             return;
         }
 
-        await testAPI({ name, endpoint, apiKey });
-    });
-
-    // 保存API
-    document.getElementById("btn-save-api")?.addEventListener("click", () => {
-        const name = document.getElementById("input-name").value.trim();
-        const endpoint = document.getElementById("input-endpoint").value.trim();
-        const apiKey = document.getElementById("input-apikey").value.trim();
-
-        if (!name || !endpoint) {
-            toastr.error("请填写名称和API地址");
-            return;
-        }
-
-        addAPI(name, endpoint, apiKey);
-        document.getElementById("api-add-form").style.display = "none";
-        document.getElementById("btn-show-add").style.display = "block";
-        clearForm();
-    });
-
-    // 导出
-    document.getElementById("btn-export")?.addEventListener("click", exportConfig);
-
-    // 导入
-    document.getElementById("btn-import")?.addEventListener("click", () => {
-        document.getElementById("import-file").click();
-    });
-
-    document.getElementById("import-file")?.addEventListener("change", (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            importConfig(file);
-            e.target.value = "";
-        }
-    });
-
-    // API列表事件委托
-    document.getElementById("api-list-container")?.addEventListener("click", async (e) => {
-        const item = e.target.closest(".api-item");
-        if (!item) return;
-        const id = item.dataset.id;
-
-        if (e.target.closest(".btn-use")) {
-            useAPI(id);
-        } else if (e.target.closest(".btn-test")) {
-            const api = settings.apiList.find(a => a.id === id);
-            if (api) await testAPI(api);
-        } else if (e.target.closest(".btn-up")) {
-            moveAPI(id, "up");
-        } else if (e.target.closest(".btn-down")) {
-            moveAPI(id, "down");
-        } else if (e.target.closest(".btn-delete")) {
-            if (confirm("确定要删除这个API吗？")) {
-                deleteAPI(id);
-            }
-        } else if (e.target.classList.contains("api-toggle")) {
-            toggleAPIEnabled(id);
-        }
-    });
-}
-
-// ========== 初始化 ==========
-jQuery(async () => {
-    loadSettings();
-    createUI();
-    bindEvents();
-    updateUI();
-    setupRequestInterceptor();
-    console.log("[API轮询切换器] 插件已加载");
-});
+        const result = await testAPI({ name, endpoint, apiKey });
+        
+        // 如果测试成功，自动加载模型列表
+        if (result.success && result.models.length > 0) {
+            const select = document.getElementById("select-model");
+            select.innerHTML = '<option value="">-- 选择模型 --</option>';
+            result.models.forEach(model => {
+                const option = document.createElement("option");
+                option.value = model;
+                option.textContent = model;
+                select.appendChild(option);
+            });
+            select.style.display = "block";
+            select.onchange = () => {
+                if

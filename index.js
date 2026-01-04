@@ -6,9 +6,14 @@ const defaultSettings = {
     apiList: [],
     currentIndex: 0,
     enabled: true,
-    mode: "round-robin",
-    autoSwitch: true
+    switchMode: "every-request",  // "every-request" 每次切换 | "on-error" 失败才切换
+    rotateMode: "round-robin",    // "round-robin" 顺序 | "random" 随机
+    autoSwitch: true,             // 失败自动切换
+    showNotification: true,       // 显示弹窗提示
+    maxRetries: 3                 // 最大重试次数
 };
+
+let lastUsedIndex = -1;  // 记录上次使用的索引，避免重复
 
 function loadSettings() {
     if (!extension_settings[extensionName]) {
@@ -40,19 +45,56 @@ function getCurrentAPI() {
     return list[s.currentIndex % list.length];
 }
 
+// 获取下一个API（用于轮询模式）
 function getNextAPI() {
     const s = getSettings();
     const list = getEnabledAPIs();
     if (list.length === 0) return null;
     
-    if (s.mode === "random") {
-        s.currentIndex = Math.floor(Math.random() * list.length);
+    if (list.length === 1) {
+        s.currentIndex = 0;
+        saveSettings();
+        return list[0];
+    }
+    
+    if (s.rotateMode === "random") {
+        // 随机模式，但避免连续使用同一个
+        let newIndex;
+        do {
+            newIndex = Math.floor(Math.random() * list.length);
+        } while (newIndex === lastUsedIndex && list.length > 1);
+        s.currentIndex = newIndex;
     } else {
-        s.currentIndex = s.currentIndex % list.length;
+        // 顺序轮询
         s.currentIndex = (s.currentIndex + 1) % list.length;
     }
+    
+    lastUsedIndex = s.currentIndex;
     saveSettings();
     return list[s.currentIndex];
+}
+
+// 切换到下一个（用于失败重试）
+function switchToNextAPI() {
+    const s = getSettings();
+    const list = getEnabledAPIs();
+    if (list.length <= 1) return getCurrentAPI();
+    
+    s.currentIndex = (s.currentIndex + 1) % list.length;
+    lastUsedIndex = s.currentIndex;
+    saveSettings();
+    updateUI();
+    return list[s.currentIndex];
+}
+
+// 获取API（根据模式）
+function getAPIForRequest() {
+    const s = getSettings();
+    if (s.switchMode === "every-request") {
+        return getNextAPI();
+    } else {
+        return getCurrentAPI();
+    }
 }
 
 async function fetchModels(endpoint, apiKey) {
@@ -118,12 +160,10 @@ function switchNext() {
         toastr.warning("需要至少2个API");
         return;
     }
-    const s = getSettings();
-    s.currentIndex = (s.currentIndex + 1) % list.length;
-    saveSettings();
-    applyAPI(list[s.currentIndex]);
+    const api = switchToNextAPI();
+    applyAPI(api);
     updateUI();
-    toastr.success("已切换: " + list[s.currentIndex].name);
+    toastr.success("已切换: " + api.name);
 }
 
 function useAPI(id) {
@@ -132,7 +172,10 @@ function useAPI(id) {
     if (!api) return;
     const list = getEnabledAPIs();
     const idx = list.findIndex(a => a.id === id);
-    if (idx >= 0) s.currentIndex = idx;
+    if (idx >= 0) {
+        s.currentIndex = idx;
+        lastUsedIndex = idx;
+    }
     saveSettings();
     applyAPI(api);
     updateUI();
@@ -250,8 +293,22 @@ function importConfig(file) {
     reader.readAsText(file);
 }
 
+// 显示API使用通知
+function showAPINotification(api) {
+    const s = getSettings();
+    if (!s.showNotification) return;
+    
+    const modelInfo = api.model ? ` [${api.model}]` : "";
+    toastr.info(`🔄 ${api.name}${modelInfo}`, "正在使用", {
+        timeOut: 2000,
+        positionClass: "toast-top-center",
+        preventDuplicates: true
+    });
+}
+
 function setupInterceptor() {
     const originalFetch = window.fetch;
+    
     window.fetch = async function(url, options) {
         const s = getSettings();
         if (!s.enabled) return originalFetch.apply(this, arguments);
@@ -264,45 +321,88 @@ function setupInterceptor() {
         const list = getEnabledAPIs();
         if (list.length === 0) return originalFetch.apply(this, arguments);
         
-        const api = getNextAPI();
+        // 根据模式获取API
+        let api = getAPIForRequest();
         if (!api) return originalFetch.apply(this, arguments);
         
-        try {
-            const base = api.endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
-            const path = urlStr.includes("/v1/chat/completions") ? "/v1/chat/completions" : "/v1/completions";
-            const newUrl = base + path;
-            
-            const newOpts = JSON.parse(JSON.stringify(options || {}));
-            newOpts.headers = newOpts.headers || {};
-            if (api.apiKey) newOpts.headers["Authorization"] = "Bearer " + api.apiKey;
-            
-            if (api.model && newOpts.body) {
-                try {
-                    const body = JSON.parse(newOpts.body);
-                    body.model = api.model;
-                    newOpts.body = JSON.stringify(body);
-                } catch (e) {}
+        // 记录尝试过的API，避免无限循环
+        const triedAPIs = new Set();
+        let retryCount = 0;
+        const maxRetries = Math.min(s.maxRetries || 3, list.length);
+        
+        while (retryCount < maxRetries) {
+            try {
+                const base = api.endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
+                const path = urlStr.includes("/v1/chat/completions") ? "/v1/chat/completions" : "/v1/completions";
+                const newUrl = base + path;
+                
+                const newOpts = JSON.parse(JSON.stringify(options || {}));
+                newOpts.headers = newOpts.headers || {};
+                if (api.apiKey) newOpts.headers["Authorization"] = "Bearer " + api.apiKey;
+                
+                if (api.model && newOpts.body) {
+                    try {
+                        const body = JSON.parse(newOpts.body);
+                        body.model = api.model;
+                        newOpts.body = JSON.stringify(body);
+                    } catch (e) {}
+                }
+                
+                console.log("[API轮询] 使用: " + api.name + (api.model ? " (" + api.model + ")" : ""));
+                
+                // 更新UI显示
+                const el = document.getElementById("ar-current");
+                if (el) el.textContent = api.name + (api.model ? " (" + api.model + ")" : "");
+                
+                // 显示弹窗通知
+                showAPINotification(api);
+                
+                const res = await originalFetch.call(this, newUrl, newOpts);
+                
+                // 请求成功
+                if (res.ok) {
+                    return res;
+                }
+                
+                // 请求失败，尝试切换
+                console.warn("[API轮询] " + api.name + " 返回错误: " + res.status);
+                triedAPIs.add(api.id);
+                
+                if (s.autoSwitch && list.length > 1) {
+                    // 找一个没试过的API
+                    const nextApi = switchToNextAPI();
+                    if (nextApi && !triedAPIs.has(nextApi.id)) {
+                        toastr.warning(`${api.name} 失败(${res.status})，切换到 ${nextApi.name}`, "", { timeOut: 2000 });
+                        api = nextApi;
+                        retryCount++;
+                        continue;
+                    }
+                }
+                
+                // 没有更多API可试，返回原始响应
+                return res;
+                
+            } catch (e) {
+                console.error("[API轮询] " + api.name + " 出错:", e);
+                triedAPIs.add(api.id);
+                
+                if (s.autoSwitch && list.length > 1 && retryCount < maxRetries - 1) {
+                    const nextApi = switchToNextAPI();
+                    if (nextApi && !triedAPIs.has(nextApi.id)) {
+                        toastr.warning(`${api.name} 出错，切换到 ${nextApi.name}`, "", { timeOut: 2000 });
+                        api = nextApi;
+                        retryCount++;
+                        continue;
+                    }
+                }
+                
+                throw e;
             }
-            
-            console.log("[API轮询] " + api.name);
-            const el = document.getElementById("ar-current");
-            if (el) el.textContent = api.name + (api.model ? " (" + api.model + ")" : "");
-            
-            const res = await originalFetch.call(this, newUrl, newOpts);
-            
-            if (!res.ok && s.autoSwitch && list.length > 1) {
-                toastr.warning(api.name + " 失败，切换中");
-                return window.fetch(url, options);
-            }
-            
-            return res;
-        } catch (e) {
-            if (s.autoSwitch && list.length > 1) {
-                toastr.warning(api.name + " 出错，切换中");
-                return window.fetch(url, options);
-            }
-            throw e;
         }
+        
+        // 所有重试都失败
+        toastr.error("所有API都失败了");
+        throw new Error("所有API都失败");
     };
 }
 
@@ -322,19 +422,37 @@ function createUI() {
         </div>
         <div class="inline-drawer-content">
             <div class="ar-row">
-                <label><input type="checkbox" id="ar-enabled"> 启用</label>
+                <label><input type="checkbox" id="ar-enabled"> 启用插件</label>
                 <span>当前: <b id="ar-current">无</b></span>
             </div>
+            
+            <div class="ar-section-title">切换模式</div>
             <div class="ar-row">
-                <select id="ar-mode"><option value="round-robin">顺序</option><option value="random">随机</option></select>
-                <button id="ar-next" class="menu_button">下一个</button>
-                <label><input type="checkbox" id="ar-auto"> 失败切换</label>
+                <select id="ar-switch-mode" class="ar-select">
+                    <option value="every-request">每次请求都切换</option>
+                    <option value="on-error">失败才切换（固定模式）</option>
+                </select>
             </div>
+            
+            <div class="ar-row">
+                <select id="ar-rotate-mode" class="ar-select">
+                    <option value="round-robin">顺序轮询</option>
+                    <option value="random">随机选择</option>
+                </select>
+                <button id="ar-next" class="menu_button">⏭ 下一个</button>
+            </div>
+            
+            <div class="ar-row">
+                <label><input type="checkbox" id="ar-auto"> 失败自动重试</label>
+                <label><input type="checkbox" id="ar-notify"> 显示切换提示</label>
+            </div>
+            
             <div id="ar-stats" class="ar-stats">0/0</div>
             <div id="ar-list" class="ar-list"></div>
+            
             <button id="ar-add-btn" class="menu_button ar-wide">➕ 添加API</button>
             <div id="ar-form" style="display:none" class="ar-form">
-                <input id="ar-f-name" placeholder="名称">
+                <input id="ar-f-name" placeholder="名称（备注）">
                 <input id="ar-f-endpoint" placeholder="API地址">
                 <input id="ar-f-key" type="password" placeholder="密钥">
                 <div class="ar-row">
@@ -343,9 +461,9 @@ function createUI() {
                 </div>
                 <select id="ar-f-models" style="display:none"></select>
                 <div class="ar-row">
-                    <button id="ar-f-test" class="menu_button">测试</button>
-                    <button id="ar-f-save" class="menu_button">保存</button>
-                    <button id="ar-f-cancel" class="menu_button">取消</button>
+                    <button id="ar-f-test" class="menu_button">🔌 测试</button>
+                    <button id="ar-f-save" class="menu_button">💾 保存</button>
+                    <button id="ar-f-cancel" class="menu_button">❌ 取消</button>
                 </div>
             </div>
             <div class="ar-row">
@@ -367,23 +485,32 @@ function updateUI() {
     const chk = document.getElementById("ar-enabled");
     if (chk) chk.checked = s.enabled;
     
-    const mode = document.getElementById("ar-mode");
-    if (mode) mode.value = s.mode;
+    const switchMode = document.getElementById("ar-switch-mode");
+    if (switchMode) switchMode.value = s.switchMode;
+    
+    const rotateMode = document.getElementById("ar-rotate-mode");
+    if (rotateMode) rotateMode.value = s.rotateMode;
     
     const auto = document.getElementById("ar-auto");
     if (auto) auto.checked = s.autoSwitch;
+    
+    const notify = document.getElementById("ar-notify");
+    if (notify) notify.checked = s.showNotification;
     
     const curEl = document.getElementById("ar-current");
     if (curEl) curEl.textContent = cur ? cur.name + (cur.model ? " (" + cur.model + ")" : "") : "无";
     
     const stats = document.getElementById("ar-stats");
-    if (stats) stats.textContent = list.length + "/" + s.apiList.length + " 已启用";
+    if (stats) {
+        const modeText = s.switchMode === "every-request" ? "每次切换" : "固定模式";
+        stats.textContent = `${list.length}/${s.apiList.length} 已启用 | ${modeText}`;
+    }
     
     const listEl = document.getElementById("ar-list");
     if (!listEl) return;
     
     if (s.apiList.length === 0) {
-        listEl.innerHTML = '<div class="ar-empty">暂无API</div>';
+        listEl.innerHTML = '<div class="ar-empty">暂无API，点击上方添加</div>';
         return;
     }
     
@@ -439,16 +566,31 @@ function bindEvents() {
     document.getElementById("ar-enabled")?.addEventListener("change", e => {
         s.enabled = e.target.checked;
         saveSettings();
+        toastr.info(s.enabled ? "已启用" : "已禁用");
     });
     
-    document.getElementById("ar-mode")?.addEventListener("change", e => {
-        s.mode = e.target.value;
+    document.getElementById("ar-switch-mode")?.addEventListener("change", e => {
+        s.switchMode = e.target.value;
+        saveSettings();
+        updateUI();
+        const modeText = s.switchMode === "every-request" ? "每次请求都切换" : "固定使用，失败才切换";
+        toastr.info("切换模式: " + modeText);
+    });
+    
+    document.getElementById("ar-rotate-mode")?.addEventListener("change", e => {
+        s.rotateMode = e.target.value;
         saveSettings();
     });
     
     document.getElementById("ar-auto")?.addEventListener("change", e => {
         s.autoSwitch = e.target.checked;
         saveSettings();
+    });
+    
+    document.getElementById("ar-notify")?.addEventListener("change", e => {
+        s.showNotification = e.target.checked;
+        saveSettings();
+        toastr.info(s.showNotification ? "切换提示已开启" : "切换提示已关闭");
     });
     
     document.getElementById("ar-next")?.addEventListener("click", switchNext);
@@ -460,6 +602,7 @@ function bindEvents() {
         const key = document.getElementById("ar-f-key").value.trim();
         if (!ep) { toastr.error("填写地址"); return; }
         
+        toastr.info("获取模型中...");
         const models = await fetchModels(ep, key);
         if (models.length > 0) {
             const sel = document.getElementById("ar-f-models");
@@ -510,6 +653,7 @@ function bindEvents() {
         else if (e.target.closest(".ar-del")) { if (confirm("删除?")) deleteAPI(id); }
         else if (e.target.closest(".ar-load-m")) {
             if (!api) return;
+            toastr.info("获取模型中...");
             const models = await fetchModels(api.endpoint, api.apiKey);
             if (models.length > 0) {
                 const sel = item.querySelector(".ar-model-sel");

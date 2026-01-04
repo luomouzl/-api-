@@ -7,5 +7,5 @@
     "css": "style.css",
     "author": "User",
     "version": "1.0.0",
-    "description": "自动轮询切换多个API，支持顺序和随机模式"
+    "description": "自动轮询切换多个API，支持模型选择"
 }

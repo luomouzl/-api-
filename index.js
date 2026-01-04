@@ -1,6 +1,5 @@
-import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
+import { saveSettingsDebounced } from "../../../../script.js";
 import { extension_settings } from "../../../extensions.js";
-import { oai_settings, saveOpenAISettings } from "../../../openai.js";
 
 const extensionName = "api-rotator";
 const defaultSettings = {
@@ -17,6 +16,7 @@ const defaultSettings = {
 
 let lastUsedIndex = -1;
 let requestCount = 0;
+let isProcessing = false;
 
 function loadSettings() {
     if (!extension_settings[extensionName]) {
@@ -95,59 +95,58 @@ function getAPIForRequest() {
     }
 }
 
-// 应用API到SillyTavern的设置
+// 获取 SillyTavern 的 oai_settings
+function getOAISettings() {
+    try {
+        if (window.oai_settings) return window.oai_settings;
+        const module = window.SillyTavern?.getContext?.()?.oai_settings;
+        if (module) return module;
+    } catch (e) {
+        console.error("[API轮询] 获取oai_settings失败:", e);
+    }
+    return null;
+}
+
+// 应用API设置
 function applyAPIToST(api) {
     if (!api) return false;
     
     try {
-        // 修改 oai_settings 对象
-        if (typeof oai_settings !== 'undefined') {
-            oai_settings.reverse_proxy = api.endpoint;
-            oai_settings.proxy_password = api.apiKey || '';
-            
+        const oai = getOAISettings();
+        if (oai) {
+            oai.reverse_proxy = api.endpoint;
+            oai.proxy_password = api.apiKey || '';
             if (api.model) {
-                oai_settings.openai_model = api.model;
+                oai.openai_model = api.model;
             }
-            
-            console.log(`[API轮询] 已应用: ${api.name} (${api.model || '默认模型'})`);
-            return true;
+            console.log(`[API轮询] 已应用设置: ${api.name}`);
         }
+        
+        // 同时更新UI
+        const proxy = document.getElementById("openai_reverse_proxy");
+        if (proxy) proxy.value = api.endpoint;
+        
+        const key = document.getElementById("api_key_openai");
+        if (key) key.value = api.apiKey || "";
+        
+        if (api.model) {
+            const sel = document.getElementById("model_openai_select");
+            if (sel) {
+                let exists = Array.from(sel.options).some(o => o.value === api.model);
+                if (!exists) {
+                    const opt = document.createElement("option");
+                    opt.value = api.model;
+                    opt.textContent = api.model;
+                    sel.appendChild(opt);
+                }
+                sel.value = api.model;
+            }
+        }
+        
+        return true;
     } catch (e) {
         console.error('[API轮询] 应用API失败:', e);
-    }
-    
-    return false;
-}
-
-// 同时更新UI显示
-function applyAPIToUI(api) {
-    if (!api) return;
-    
-    const proxy = document.getElementById("openai_reverse_proxy");
-    if (proxy) {
-        proxy.value = api.endpoint;
-    }
-    
-    const key = document.getElementById("api_key_openai");
-    if (key) {
-        key.value = api.apiKey || "";
-    }
-    
-    if (api.model) {
-        const sel = document.getElementById("model_openai_select");
-        if (sel) {
-            let exists = false;
-            for (const opt of sel.options) {
-                if (opt.value === api.model) { exists = true; break; }
-            }
-            if (!exists) {
-                const opt = document.createElement("option");
-                opt.value = api.model;
-                opt.textContent = api.model;
-                sel.appendChild(opt);
-            }
-            sel.value = api.model;
-        }
+        return false;
     }
 }
 
@@ -167,6 +166,18 @@ async function fetchModels(endpoint, apiKey) {
     return [];
 }
 
+function showNotification(api, extra) {
+    const s = getSettings();
+    if (!s.showNotification) return;
+    
+    const modelInfo = api.model ? ` [${api.model}]` : "";
+    const extraInfo = extra ? ` (${extra})` : "";
+    toastr.info(`🔄 ${api.name}${modelInfo}${extraInfo}`, "正在使用", {
+        timeOut: 2000,
+        positionClass: "toast-top-center"
+    });
+}
+
 function switchNext() {
     const list = getEnabledAPIs();
     if (list.length < 2) {
@@ -175,7 +186,6 @@ function switchNext() {
     }
     const api = switchToNextAPI();
     applyAPIToST(api);
-    applyAPIToUI(api);
     updateUI();
     toastr.success("已切换: " + api.name);
 }
@@ -192,7 +202,6 @@ function useAPI(id) {
     }
     saveSettings();
     applyAPIToST(api);
-    applyAPIToUI(api);
     updateUI();
     toastr.success("已切换: " + api.name);
 }
@@ -201,9 +210,7 @@ function addAPI(name, endpoint, apiKey, model) {
     const s = getSettings();
     s.apiList.push({
         id: Date.now().toString(),
-        name: name,
-        endpoint: endpoint,
-        apiKey: apiKey,
+        name, endpoint, apiKey,
         model: model || "",
         enabled: true
     });
@@ -241,9 +248,7 @@ function moveAPI(id, dir) {
     const idx = s.apiList.findIndex(a => a.id === id);
     const newIdx = dir === "up" ? idx - 1 : idx + 1;
     if (idx < 0 || newIdx < 0 || newIdx >= s.apiList.length) return;
-    const temp = s.apiList[idx];
-    s.apiList[idx] = s.apiList[newIdx];
-    s.apiList[newIdx] = temp;
+    [s.apiList[idx], s.apiList[newIdx]] = [s.apiList[newIdx], s.apiList[idx]];
     saveSettings();
     updateUI();
 }
@@ -308,88 +313,56 @@ function importConfig(file) {
     reader.readAsText(file);
 }
 
-function showAPINotification(api) {
-    const s = getSettings();
-    if (!s.showNotification) return;
-    
-    const modelInfo = api.model ? ` [${api.model}]` : "";
-    toastr.info(`🔄 ${api.name}${modelInfo}`, "正在使用", {
-        timeOut: 2000,
-        positionClass: "toast-top-center",
-        preventDuplicates: false
-    });
-}
-
-// 设置事件监听 - 在生成前切换API
-function setupEventHooks() {
-    // 监听生成开始事件
-    eventSource.on(event_types.GENERATION_STARTED, () => {
-        const s = getSettings();
-        if (!s.enabled) return;
-        
-        const list = getEnabledAPIs();
-        if (list.length === 0) return;
-        
-        const api = getAPIForRequest();
-        if (!api) return;
-        
-        requestCount++;
-        console.log(`[API轮询] 请求 #${requestCount} - 使用: ${api.name}`);
-        
-        applyAPIToST(api);
-        showAPINotification(api);
-        updateUI();
-    });
-    
-    // 监听生成结束事件（用于检测失败并重试）
-    eventSource.on(event_types.GENERATION_ENDED, () => {
-        // 可以在这里处理成功后的逻辑
-    });
-    
-    // 监听生成错误事件
-    eventSource.on(event_types.GENERATION_ERROR, (error) => {
-        const s = getSettings();
-        if (!s.enabled || !s.autoSwitch) return;
-        
-        const list = getEnabledAPIs();
-        if (list.length <= 1) return;
-        
-        const currentAPI = getCurrentAPI();
-        const nextAPI = switchToNextAPI();
-        
-        if (nextAPI && nextAPI.id !== currentAPI?.id) {
-            toastr.warning(`${currentAPI?.name || 'API'} 失败，已切换到 ${nextAPI.name}`, "", { timeOut: 2000 });
-            applyAPIToST(nextAPI);
-            applyAPIToUI(nextAPI);
+// 监听发送按钮点击
+function setupSendButtonHook() {
+    const observer = new MutationObserver(() => {
+        const sendBtn = document.getElementById("send_but");
+        if (sendBtn && !sendBtn._arHooked) {
+            sendBtn._arHooked = true;
+            sendBtn.addEventListener("click", onBeforeSend, true);
+            console.log("[API轮询] 发送按钮已挂钩");
         }
     });
     
-    console.log("[API轮询] 事件监听已设置");
-}
-
-// 备用方案：拦截jQuery的ajax请求
-function setupAjaxInterceptor() {
-    if (typeof jQuery === 'undefined') return;
+    observer.observe(document.body, { childList: true, subtree: true });
     
-    jQuery(document).ajaxSend((event, jqXHR, settings) => {
-        const s = getSettings();
-        if (!s.enabled) return;
-        
-        // 检查是否是聊天完成请求
-        if (settings.url && (
-            settings.url.includes('/generate') ||
-            settings.url.includes('/chat') ||
-            settings.url.includes('/api/backends')
-        )) {
-            const list = getEnabledAPIs();
-            if (list.length === 0) return;
-            
-            const api = getCurrentAPI();
-            if (api) {
-                applyAPIToST(api);
+    // 立即检查
+    const sendBtn = document.getElementById("send_but");
+    if (sendBtn && !sendBtn._arHooked) {
+        sendBtn._arHooked = true;
+        sendBtn.addEventListener("click", onBeforeSend, true);
+    }
+    
+    // 监听回车发送
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            const textarea = document.getElementById("send_textarea");
+            if (textarea && document.activeElement === textarea) {
+                onBeforeSend();
             }
         }
-    });
+    }, true);
+}
+
+function onBeforeSend() {
+    const s = getSettings();
+    if (!s.enabled || isProcessing) return;
+    
+    const list = getEnabledAPIs();
+    if (list.length === 0) return;
+    
+    isProcessing = true;
+    requestCount++;
+    
+    const api = getAPIForRequest();
+    if (api) {
+        console.log(`[API轮询] 请求 #${requestCount} → ${api.name}`);
+        applyAPIToST(api);
+        showNotification(api);
+        updateUI();
+    }
+    
+    setTimeout(() => { isProcessing = false; }, 500);
 }
 
 function esc(text) {
@@ -442,11 +415,11 @@ function createUI() {
             <button id="ar-add-btn" class="menu_button ar-wide">➕ 添加API</button>
             <div id="ar-form" style="display:none" class="ar-form">
                 <input id="ar-f-name" placeholder="名称（备注）">
-                <input id="ar-f-endpoint" placeholder="API地址 (如: https://api.example.com/v1)">
+                <input id="ar-f-endpoint" placeholder="API地址">
                 <input id="ar-f-key" type="password" placeholder="API密钥">
                 <div class="ar-row">
-                    <input id="ar-f-model" placeholder="模型名称(可选)">
-                    <button id="ar-f-fetch" class="menu_button">🔄 获取</button>
+                    <input id="ar-f-model" placeholder="模型(可选)">
+                    <button id="ar-f-fetch" class="menu_button">🔄</button>
                 </div>
                 <select id="ar-f-models" style="display:none"></select>
                 <div class="ar-row">
@@ -459,9 +432,6 @@ function createUI() {
                 <button id="ar-export" class="menu_button">📤 导出</button>
                 <button id="ar-import" class="menu_button">📥 导入</button>
                 <input type="file" id="ar-file" accept=".json" style="display:none">
-            </div>
-            <div class="ar-hint">
-                提示: 需要在官方设置中选择 Chat Completion API 类型
             </div>
         </div>
     </div>
@@ -553,36 +523,31 @@ function hideForm() {
 }
 
 function bindEvents() {
-    const s = getSettings();
-    
     document.getElementById("ar-enabled")?.addEventListener("change", e => {
-        s.enabled = e.target.checked;
+        getSettings().enabled = e.target.checked;
         saveSettings();
-        toastr.info(s.enabled ? "已启用" : "已禁用");
+        toastr.info(e.target.checked ? "已启用" : "已禁用");
     });
     
     document.getElementById("ar-switch-mode")?.addEventListener("change", e => {
-        s.switchMode = e.target.value;
+        getSettings().switchMode = e.target.value;
         saveSettings();
         updateUI();
-        const modeText = s.switchMode === "every-request" ? "每次请求都切换" : "固定使用，失败才切换";
-        toastr.info("切换模式: " + modeText);
     });
     
     document.getElementById("ar-rotate-mode")?.addEventListener("change", e => {
-        s.rotateMode = e.target.value;
+        getSettings().rotateMode = e.target.value;
         saveSettings();
     });
     
     document.getElementById("ar-auto")?.addEventListener("change", e => {
-        s.autoSwitch = e.target.checked;
+        getSettings().autoSwitch = e.target.checked;
         saveSettings();
     });
     
     document.getElementById("ar-notify")?.addEventListener("change", e => {
-        s.showNotification = e.target.checked;
+        getSettings().showNotification = e.target.checked;
         saveSettings();
-        toastr.info(s.showNotification ? "切换提示已开启" : "切换提示已关闭");
     });
     
     document.getElementById("ar-next")?.addEventListener("click", switchNext);
@@ -594,11 +559,10 @@ function bindEvents() {
         const key = document.getElementById("ar-f-key").value.trim();
         if (!ep) { toastr.error("填写地址"); return; }
         
-        toastr.info("获取模型中...");
         const models = await fetchModels(ep, key);
         if (models.length > 0) {
             const sel = document.getElementById("ar-f-models");
-            sel.innerHTML = '<option value="">选择模型</option>' + models.map(m => '<option value="' + m + '">' + m + '</option>').join('');
+            sel.innerHTML = '<option value="">选择模型</option>' + models.map(m => `<option value="${m}">${m}</option>`).join('');
             sel.style.display = "block";
             sel.onchange = () => { document.getElementById("ar-f-model").value = sel.value; };
             toastr.success(models.length + "个模型");
@@ -634,26 +598,21 @@ function bindEvents() {
         const item = e.target.closest(".ar-item");
         if (!item) return;
         const id = item.dataset.id;
-        const s = getSettings();
-        const api = s.apiList.find(a => a.id === id);
+        const api = getSettings().apiList.find(a => a.id === id);
         
-        if (e.target.classList.contains("ar-chk")) { toggleAPI(id); }
-        else if (e.target.closest(".ar-use")) { useAPI(id); }
-        else if (e.target.closest(".ar-test")) { if (api) await testAPI(api); }
-        else if (e.target.closest(".ar-up")) { moveAPI(id, "up"); }
-        else if (e.target.closest(".ar-down")) { moveAPI(id, "down"); }
-        else if (e.target.closest(".ar-del")) { if (confirm("删除?")) deleteAPI(id); }
-        else if (e.target.closest(".ar-load-m")) {
-            if (!api) return;
-            toastr.info("获取模型中...");
+        if (e.target.classList.contains("ar-chk")) toggleAPI(id);
+        else if (e.target.closest(".ar-use")) useAPI(id);
+        else if (e.target.closest(".ar-test") && api) await testAPI(api);
+        else if (e.target.closest(".ar-up")) moveAPI(id, "up");
+        else if (e.target.closest(".ar-down")) moveAPI(id, "down");
+        else if (e.target.closest(".ar-del") && confirm("删除?")) deleteAPI(id);
+        else if (e.target.closest(".ar-load-m") && api) {
             const models = await fetchModels(api.endpoint, api.apiKey);
             if (models.length > 0) {
                 const sel = item.querySelector(".ar-model-sel");
                 const cur = sel.value;
-                sel.innerHTML = '<option value="">默认</option>' + models.map(m => '<option value="' + m + '"' + (m === cur ? ' selected' : '') + '>' + m + '</option>').join('');
+                sel.innerHTML = '<option value="">默认</option>' + models.map(m => `<option value="${m}"${m === cur ? ' selected' : ''}>${m}</option>`).join('');
                 toastr.success(models.length + "个模型");
-            } else {
-                toastr.error("获取失败");
             }
         }
     });
@@ -661,30 +620,22 @@ function bindEvents() {
     document.getElementById("ar-list")?.addEventListener("change", e => {
         if (e.target.classList.contains("ar-model-sel")) {
             const item = e.target.closest(".ar-item");
-            if (item) {
-                setAPIModel(item.dataset.id, e.target.value);
-                toastr.info("模型已更新");
-            }
+            if (item) setAPIModel(item.dataset.id, e.target.value);
         }
     });
 }
 
+// 初始化
 jQuery(async () => {
-    loadSettings();
-    createUI();
-    updateUI();
-    bindEvents();
-    
-    // 设置事件监听
-    setupEventHooks();
-    setupAjaxInterceptor();
-    
-    // 初始化时应用当前API
-    const currentAPI = getCurrentAPI();
-    if (currentAPI && getSettings().enabled) {
-        applyAPIToST(currentAPI);
-        console.log("[API轮询] 初始API:", currentAPI.name);
+    try {
+        loadSettings();
+        createUI();
+        updateUI();
+        bindEvents();
+        setupSendButtonHook();
+        
+        console.log("[API轮询] 插件已加载");
+    } catch (e) {
+        console.error("[API轮询] 初始化失败:", e);
     }
-    
-    console.log("[API轮询] 已加载 (事件模式)");
 });

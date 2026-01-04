@@ -1,803 +1,646 @@
-import { saveSettingsDebounced } from "../../../../script.js";
-import { extension_settings } from "../../../extensions.js";
+// API轮询切换器插件 for SillyTavern
+(function () {
+    'use strict';
 
-const extensionName = "multi-api-switcher";
-const defaultSettings = {
-    apiList: [],
-    currentId: null,
-    autoSwitch: true,
-    autoSwitchOnError: true
-};
+    const PLUGIN_NAME = 'API轮询切换器';
+    const STORAGE_KEY = 'api_rotator_data';
 
-function loadSettings() {
-    if (!extension_settings[extensionName]) {
-        extension_settings[extensionName] = {};
-    }
-    Object.keys(defaultSettings).forEach(key => {
-        if (extension_settings[extensionName][key] === undefined) {
-            extension_settings[extensionName][key] = defaultSettings[key];
-        }
-    });
-}
+    // 插件状态
+    let state = {
+        enabled: true,
+        mode: 'round-robin', // round-robin | random
+        currentIndex: 0,
+        apiList: []
+    };
 
-function getSettings() {
-    return extension_settings[extensionName];
-}
-
-function saveSettings() {
-    saveSettingsDebounced();
-}
-
-function getCurrentAPI() {
-    const settings = getSettings();
-    if (!settings.currentId) return null;
-    return settings.apiList.find(api => api.id === settings.currentId) || null;
-}
-
-async function testConnection(api) {
-    try {
-        const response = await fetch(api.endpoint + "/models", {
-            method: "GET",
-            headers: {
-                "Authorization": "Bearer " + api.apiKey,
-                "Content-Type": "application/json"
+    // ========== 存储管理 ==========
+    function loadState() {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                const data = JSON.parse(saved);
+                state = { ...state, ...data };
             }
-        });
-        
-        if (response.ok) {
-            const data = await response.json();
-            const models = data.data || data.models || [];
-            return { 
-                success: true, 
-                models: models.map(m => m.id || m.name || m),
-                message: "连接成功，找到 " + models.length + " 个模型"
-            };
-        } else {
-            const errorText = await response.text();
-            return { 
-                success: false, 
-                models: [],
-                message: "连接失败: " + response.status + " " + errorText.substring(0, 100)
-            };
+        } catch (e) {
+            console.error(`[${PLUGIN_NAME}] 加载配置失败:`, e);
         }
-    } catch (error) {
-        return { 
-            success: false, 
-            models: [],
-            message: "连接错误: " + error.message
+    }
+
+    function saveState() {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch (e) {
+            console.error(`[${PLUGIN_NAME}] 保存配置失败:`, e);
+        }
+    }
+
+    // ========== API轮询逻辑 ==========
+    function getNextApi() {
+        const enabledApis = state.apiList.filter(api => api.enabled);
+        if (enabledApis.length === 0) return null;
+
+        let selected;
+        if (state.mode === 'random') {
+            const idx = Math.floor(Math.random() * enabledApis.length);
+            selected = enabledApis[idx];
+        } else {
+            state.currentIndex = state.currentIndex % enabledApis.length;
+            selected = enabledApis[state.currentIndex];
+            state.currentIndex++;
+        }
+
+        saveState();
+        return selected;
+    }
+
+    // ========== 请求拦截 ==========
+    function initRequestInterceptor() {
+        const originalFetch = window.fetch;
+
+        window.fetch = async function (url, options = {}) {
+            // 检查是否启用且有可用API
+            if (!state.enabled || state.apiList.length === 0) {
+                return originalFetch.apply(this, arguments);
+            }
+
+            // 检测是否是AI API请求
+            const apiEndpoints = [
+                '/v1/chat/completions',
+                '/v1/completions',
+                '/api/v1/generate',
+                '/v1/messages'
+            ];
+
+            const isApiRequest = apiEndpoints.some(endpoint => 
+                url.toString().includes(endpoint)
+            );
+
+            if (!isApiRequest) {
+                return originalFetch.apply(this, arguments);
+            }
+
+            // 获取下一个API
+            const nextApi = getNextApi();
+            if (!nextApi) {
+                return originalFetch.apply(this, arguments);
+            }
+
+            // 构建新请求
+            try {
+                const newUrl = buildUrl(url, nextApi);
+                const newOptions = buildOptions(options, nextApi);
+
+                console.log(`[${PLUGIN_NAME}] 使用: ${nextApi.name}`);
+                showNotification(`使用API: ${nextApi.name}`, 'info');
+                updateCurrentDisplay(nextApi.name);
+
+                return originalFetch.call(this, newUrl, newOptions);
+            } catch (e) {
+                console.error(`[${PLUGIN_NAME}] 请求构建失败:`, e);
+                return originalFetch.apply(this, arguments);
+            }
         };
     }
-}
 
-function applyAPI(api) {
-    if (!api) return;
-    
-    const proxyInput = document.getElementById("openai_reverse_proxy");
-    if (proxyInput) {
-        proxyInput.value = api.endpoint;
-        proxyInput.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    
-    const keyInput = document.getElementById("api_key_openai");
-    if (keyInput) {
-        keyInput.value = api.apiKey;
-        keyInput.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    
-    if (api.model) {
-        const modelInput = document.getElementById("model_openai_select");
-        if (modelInput) {
-            modelInput.value = api.model;
-            modelInput.dispatchEvent(new Event("change", { bubbles: true }));
+    function buildUrl(originalUrl, api) {
+        const urlStr = originalUrl.toString();
+        
+        // 提取路径部分
+        let path = '';
+        const pathPatterns = [
+            '/v1/chat/completions',
+            '/v1/completions',
+            '/api/v1/generate',
+            '/v1/messages'
+        ];
+        
+        for (const pattern of pathPatterns) {
+            if (urlStr.includes(pattern)) {
+                path = pattern;
+                break;
+            }
         }
-        const modelTextInput = document.querySelector('input[name="model_openai"]');
-        if (modelTextInput) {
-            modelTextInput.value = api.model;
-            modelTextInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+        // 组合新URL
+        const baseUrl = api.endpoint.replace(/\/+$/, '');
+        return baseUrl + path;
+    }
+
+    function buildOptions(options, api) {
+        const newOptions = JSON.parse(JSON.stringify(options));
+        
+        if (!newOptions.headers) {
+            newOptions.headers = {};
         }
+
+        // 处理Headers对象
+        if (options.headers instanceof Headers) {
+            const headerObj = {};
+            options.headers.forEach((value, key) => {
+                headerObj[key] = value;
+            });
+            newOptions.headers = headerObj;
+        }
+
+        // 设置API密钥
+        if (api.apiKey) {
+            newOptions.headers['Authorization'] = `Bearer ${api.apiKey}`;
+        }
+
+        return newOptions;
     }
-    
-    setTimeout(() => {
-        const connectBtn = document.getElementById("api_button_openai");
-        if (connectBtn) connectBtn.click();
-    }, 200);
-}
 
-function useAPI(id) {
-    const settings = getSettings();
-    const api = settings.apiList.find(a => a.id === id);
-    if (!api) return;
-    
-    settings.currentId = id;
-    applyAPI(api);
-    saveSettings();
-    updateUI();
-    toastr.success("已切换到: " + api.name);
-}
-
-function switchToNext() {
-    const settings = getSettings();
-    const enabledList = settings.apiList.filter(api => api.enabled !== false);
-    if (enabledList.length <= 1) {
-        toastr.warning("没有其他可用的API");
-        return;
+    // ========== UI相关 ==========
+    function createUI() {
+        // 创建设置按钮
+        createSettingsButton();
+        // 创建设置面板
+        createSettingsPanel();
     }
-    
-    const currentIndex = enabledList.findIndex(api => api.id === settings.currentId);
-    const nextIndex = (currentIndex + 1) % enabledList.length;
-    const nextAPI = enabledList[nextIndex];
-    
-    useAPI(nextAPI.id);
-}
 
-function addAPI(data) {
-    const settings = getSettings();
-    const newAPI = {
-        id: Date.now().toString(),
-        name: data.name,
-        endpoint: data.endpoint.replace(/\/$/, ""),
-        apiKey: data.apiKey,
-        model: data.model || "",
-        models: data.models || [],
-        enabled: true,
-        lastTest: null,
-        lastTestSuccess: null
-    };
-    settings.apiList.push(newAPI);
-    
-    if (!settings.currentId) {
-        settings.currentId = newAPI.id;
+    function createSettingsButton() {
+        // 在酒馆扩展菜单添加按钮
+        const extensionsMenu = document.getElementById('extensionsMenu');
+        if (extensionsMenu) {
+            const menuItem = document.createElement('div');
+            menuItem.id = 'api-rotator-menu-btn';
+            menuItem.className = 'list-group-item flex-container flexGap5';
+            menuItem.innerHTML = `
+                <div class="fa-solid fa-rotate extensionsMenuExtensionButton"></div>
+                API轮询切换器
+            `;
+            menuItem.style.cursor = 'pointer';
+            menuItem.addEventListener('click', togglePanel);
+            extensionsMenu.appendChild(menuItem);
+        }
+
+        // 备用：在页面底部添加浮动按钮
+        const floatBtn = document.createElement('div');
+        floatBtn.id = 'api-rotator-float-btn';
+        floatBtn.innerHTML = '🔄';
+        floatBtn.title = 'API轮询切换器';
+        floatBtn.addEventListener('click', togglePanel);
+        document.body.appendChild(floatBtn);
     }
-    
-    saveSettings();
-    updateUI();
-    toastr.success("已添加: " + newAPI.name);
-    return newAPI;
-}
 
-function updateAPI(id, data) {
-    const settings = getSettings();
-    const api = settings.apiList.find(a => a.id === id);
-    if (!api) return;
-    
-    Object.assign(api, data);
-    saveSettings();
-    updateUI();
-    toastr.success("已更新: " + api.name);
-}
+    function createSettingsPanel() {
+        const panel = document.createElement('div');
+        panel.id = 'api-rotator-panel';
+        panel.className = 'api-rotator-panel';
+        panel.innerHTML = `
+            <div class="api-rotator-container">
+                <div class="api-rotator-header">
+                    <h3>🔄 API轮询切换器</h3>
+                    <button class="api-rotator-close-btn" id="api-rotator-close">×</button>
+                </div>
 
-function deleteAPI(id) {
-    const settings = getSettings();
-    const index = settings.apiList.findIndex(a => a.id === id);
-    if (index === -1) return;
-    
-    const name = settings.apiList[index].name;
-    settings.apiList.splice(index, 1);
-    
-    if (settings.currentId === id) {
-        settings.currentId = settings.apiList[0]?.id || null;
-    }
-    
-    saveSettings();
-    updateUI();
-    toastr.info("已删除: " + name);
-}
-
-function toggleEnabled(id) {
-    const settings = getSettings();
-    const api = settings.apiList.find(a => a.id === id);
-    if (!api) return;
-    
-    api.enabled = !api.enabled;
-    saveSettings();
-    updateUI();
-}
-
-function createUI() {
-    const html = `
-    <div id="multi-api-panel">
-        <div class="inline-drawer">
-            <div class="inline-drawer-toggle inline-drawer-header">
-                <b>🔄 多API轮换管理</b>
-                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
-            </div>
-            <div class="inline-drawer-content">
-                
-                <div class="api-current-box">
-                    <h4>📡 当前使用</h4>
-                    <div class="api-current-info" id="current-api-info">
-                        <div><span class="label">名称:</span><span class="value" id="cur-name">未配置</span></div>
-                        <div><span class="label">地址:</span><span class="value" id="cur-endpoint">-</span></div>
-                        <div><span class="label">模型:</span><span class="value" id="cur-model">-</span></div>
-                    </div>
-                </div>
-                
-                <div class="api-actions-bar">
-                    <button id="btn-switch-next" class="menu_button">
-                        <i class="fa-solid fa-forward"></i> 切换下一个
-                    </button>
-                    <button id="btn-test-current" class="menu_button">
-                        <i class="fa-solid fa-plug"></i> 测试当前
-                    </button>
-                    <button id="btn-refresh-models" class="menu_button">
-                        <i class="fa-solid fa-rotate"></i> 刷新模型
-                    </button>
-                </div>
-                
-                <div id="test-result-box"></div>
-                
-                <div class="settings-section">
-                    <label>
-                        <input type="checkbox" id="chk-auto-switch-error">
-                        请求出错时自动切换到下一个API
-                    </label>
-                </div>
-                
-                <h4 style="margin: 15px 0 10px 0;">📋 API列表</h4>
-                <div class="api-list-container" id="api-list-container">
-                    <div style="padding: 20px; text-align: center; opacity: 0.6;">
-                        还没有添加API，点击下方按钮添加
-                    </div>
-                </div>
-                
-                <button id="btn-add-api" class="menu_button" style="width: 100%;">
-                    <i class="fa-solid fa-plus"></i> 添加新API
-                </button>
-                
-                <div class="api-form-box" id="api-form-box">
-                    <h4 id="form-title">添加新API</h4>
-                    <input type="hidden" id="form-edit-id">
-                    
-                    <label>备注名称 *</label>
-                    <input type="text" id="form-name" placeholder="例如：中转站A、官方API">
-                    
-                    <label>API地址 *</label>
-                    <input type="text" id="form-endpoint" placeholder="https://api.example.com/v1">
-                    
-                    <label>API Key *</label>
-                    <input type="password" id="form-apikey" placeholder="sk-xxx...">
-                    
-                    <div style="margin-top: 10px;">
-                        <button id="btn-form-test" class="menu_button" style="width: 100%;">
-                            <i class="fa-solid fa-plug"></i> 测试连接并获取模型
-                        </button>
-                    </div>
-                    
-                    <div id="form-test-result"></div>
-                    
-                    <div class="model-select-box" id="model-select-box" style="display: none;">
-                        <label>选择模型</label>
-                        <select id="form-model">
-                            <option value="">-- 请先测试连接 --</option>
+                <div class="api-rotator-section">
+                    <div class="api-rotator-controls">
+                        <label class="api-rotator-switch">
+                            <input type="checkbox" id="api-rotator-enabled" ${state.enabled ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                        <span>启用轮询</span>
+                        
+                        <select id="api-rotator-mode">
+                            <option value="round-robin" ${state.mode === 'round-robin' ? 'selected' : ''}>顺序轮询</option>
+                            <option value="random" ${state.mode === 'random' ? 'selected' : ''}>随机选择</option>
                         </select>
                     </div>
-                    
-                    <div class="api-form-buttons">
-                        <button id="btn-form-save" class="menu_button">
-                            <i class="fa-solid fa-check"></i> 保存
-                        </button>
-                        <button id="btn-form-cancel" class="menu_button">
-                            <i class="fa-solid fa-times"></i> 取消
-                        </button>
+
+                    <div class="api-rotator-status" id="api-rotator-status">
+                        就绪
                     </div>
                 </div>
-                
-            </div>
-        </div>
-    </div>`;
-    
-    const container = document.getElementById("extensions_settings");
-    if (container) {
-        container.insertAdjacentHTML("beforeend", html);
-    }
-}
 
-function updateUI() {
-    const settings = getSettings();
-    const currentAPI = getCurrentAPI();
-    
-    document.getElementById("cur-name").textContent = currentAPI?.name || "未配置";
-    document.getElementById("cur-endpoint").textContent = currentAPI?.endpoint || "-";
-    document.getElementById("cur-model").textContent = currentAPI?.model || "-";
-    
-    document.getElementById("chk-auto-switch-error").checked = settings.autoSwitchOnError;
-    
-    const listContainer = document.getElementById("api-list-container");
-    if (settings.apiList.length === 0) {
-        listContainer.innerHTML = `
-            <div style="padding: 20px; text-align: center; opacity: 0.6;">
-                还没有添加API，点击下方按钮添加
-            </div>`;
-    } else {
-        listContainer.innerHTML = settings.apiList.map(api => {
-            const isActive = api.id === settings.currentId;
-            const isEnabled = api.enabled !== false;
-            let statusClass = "";
-            if (api.lastTestSuccess === true) statusClass = "online";
-            else if (api.lastTestSuccess === false) statusClass = "offline";
-            
-            return `
-            <div class="api-card ${isActive ? 'active' : ''} ${!isEnabled ? 'disabled' : ''}" data-id="${api.id}">
-                <div class="api-card-header">
-                    <div class="api-card-name">
-                        <span class="status-dot ${statusClass}"></span>
-                        ${isActive ? '✓ ' : ''}${api.name}
+                <div class="api-rotator-section">
+                    <h4>API列表</h4>
+                    <div class="api-rotator-list" id="api-rotator-list"></div>
+                </div>
+
+                <div class="api-rotator-section">
+                    <h4>添加新API</h4>
+                    <div class="api-rotator-form">
+                        <input type="text" id="api-new-name" placeholder="名称（如：中转站1）">
+                        <input type="text" id="api-new-endpoint" placeholder="API地址（如：https://api.example.com）">
+                        <input type="password" id="api-new-key" placeholder="API密钥（sk-xxx）">
+                        <div class="api-rotator-form-actions">
+                            <button id="api-add-btn" class="api-rotator-btn primary">添加</button>
+                            <button id="api-test-new-btn" class="api-rotator-btn">测试</button>
+                        </div>
                     </div>
                 </div>
-                <div class="api-card-details">
-                    <div>📍 ${api.endpoint}</div>
-                    <div>🤖 ${api.model || '未选择模型'}</div>
-                    ${api.lastTest ? '<div>🕐 上次测试: ' + new Date(api.lastTest).toLocaleString() + '</div>' : ''}
+
+                <div class="api-rotator-section">
+                    <h4>导入/导出</h4>
+                    <div class="api-rotator-io">
+                        <button id="api-export-btn" class="api-rotator-btn">导出配置</button>
+                        <button id="api-import-btn" class="api-rotator-btn">导入配置</button>
+                        <input type="file" id="api-import-file" accept=".json" style="display:none">
+                    </div>
                 </div>
-                <div class="api-card-actions">
-                    <button class="menu_button btn-use" ${!isEnabled ? 'disabled' : ''}>
-                        <i class="fa-solid fa-play"></i> 使用
-                    </button>
-                    <button class="menu_button btn-test">
-                        <i class="fa-solid fa-plug"></i> 测试
-                    </button>
-                    <button class="menu_button btn-edit">
-                        <i class="fa-solid fa-pen"></i> 编辑
-                    </button>
-                    <button class="menu_button btn-toggle">
-                        <i class="fa-solid fa-${isEnabled ? 'eye' : 'eye-slash'}"></i>
-                    </button>
-                    <button class="menu_button btn-delete">
-                        <i class="fa-solid fa-trash"></i>
-                    </button>
-                </div>
-            </div>`;
-        }).join("");
-    }
-}
-
-function showForm(editId = null) {
-    const formBox = document.getElementById("api-form-box");
-    const settings = getSettings();
-    
-    document.getElementById("form-edit-id").value = editId || "";
-    document.getElementById("form-title").textContent = editId ? "编辑API" : "添加新API";
-    
-    if (editId) {
-        const api = settings.apiList.find(a => a.id === editId);
-        if (api) {
-            document.getElementById("form-name").value = api.name;
-            document.getElementById("form-endpoint").value = api.endpoint;
-            document.getElementById("form-apikey").value = api.apiKey;
-            document.getElementById("form-model").value = api.model || "";
-            
-            if (api.models && api.models.length > 0) {
-                updateModelSelect(api.models, api.model);
-            }
-        }
-    } else {
-        document.getElementById("form-name").value = "";
-        document.getElementById("form-endpoint").value = "";
-        document.getElementById("form-apikey").value = "";
-        document.getElementById("form-model").innerHTML = '<option value="">-- 请先测试连接 --</option>';
-        document.getElementById("model-select-box").style.display = "none";
-    }
-    
-    document.getElementById("form-test-result").innerHTML = "";
-    formBox.classList.add("show");
-    document.getElementById("btn-add-api").style.display = "none";
-}
-
-function hideForm() {
-    document.getElementById("api-form-box").classList.remove("show");
-    document.getElementById("btn-add-api").style.display = "block";
-}
-
-function updateModelSelect(models, selectedModel = "") {
-    const select = document.getElementById("form-model");
-    select.innerHTML = models.map(m => 
-        `<option value="${m}" ${m === selectedModel ? 'selected' : ''}>${m}</option>`
-    ).join("");
-    document.getElementById("model-select-box").style.display = "block";
-}
-
-function bindEvents() {
-    document.getElementById("btn-switch-next")?.addEventListener("click", switchToNext);
-    
-    document.getElementById("btn-test-current")?.addEventListener("click", async () => {
-        const api = getCurrentAPI();
-        if (!api) {
-            toastr.warning("请先选择一个API");
-            return;
-        }
-        
-        const resultBox = document.getElementById("test-result-box");
-        resultBox.innerHTML = '<div class="test-result loading">⏳ 正在测试连接...</div>';
-        
-        const result = await testConnection(api);
-        
-        api.lastTest = Date.now();
-        api.lastTestSuccess = result.success;
-        if (result.success && result.models.length > 0) {
-            api.models = result.models;
-        }
-        saveSettings();
-        updateUI();
-        
-        resultBox.innerHTML = `<div class="test-result ${result.success ? 'success' : 'error'}">
-            ${result.success ? '✅' : '❌'} ${result.message}
-        </div>`;
-    });
-    
-    document.getElementById("btn-refresh-models")?.addEventListener("click", async () => {
-        const api = getCurrentAPI();
-        if (!api) {
-            toastr.warning("请先选择一个API");
-            return;
-        }
-        
-        toastr.info("正在获取模型列表...");
-        const result = await testConnection(api);
-        
-        if (result.success && result.models.length > 0) {
-            api.models = result.models;
-            saveSettings();
-            toastr.success("获取到 " + result.models.length + " 个模型");
-        } else {
-            toastr.error(result.message);
-        }
-    });
-    
-    document.getElementById("chk-auto-switch-error")?.addEventListener("change", (e) => {
-        getSettings().autoSwitchOnError = e.target.checked;
-        saveSettings();
-    });
-    
-    document.getElementById("btn-add-api")?.addEventListener("click", () => showForm());
-    
-    document.getElementById("btn-form-test")?.addEventListener("click", async () => {
-        const endpoint = document.getElementById("form-endpoint").value.trim();
-        const apiKey = document.getElementById("form-apikey").value.trim();
-        
-        if (!endpoint || !apiKey) {
-            toastr.error("请填写API地址和Key");
-            return;
-        }
-        
-        const resultBox = document.getElementById("form-test-result");
-        resultBox.innerHTML = '<div class="test-result loading">⏳ 正在测试连接...</div>';
-        
-        const result = await testConnection({ endpoint: endpoint.replace(/\/$/, ""), apiKey });
-        
-        resultBox.innerHTML = `<div class="test-result ${result.success ? 'success' : 'error'}">
-            ${result.success ? '✅' : '❌'} ${result.message}
-        </div>`;
-        
-        if (result.success && result.models.length > 0) {
-            updateModelSelect(result.models);
-        }
-    });
-    
-    document.getElementById("btn-form-save")?.addEventListener("click", () => {
-        const editId = document.getElementById("form-edit-id").value;
-        const name = document.getElementById("form-name").value.trim();
-        const endpoint = document.getElementById("form-endpoint").value.trim();
-        const apiKey = document.getElementById("form-apikey").value.trim();
-        const model = document.getElementById("form-model").value;
-        
-        if (!name || !endpoint || !apiKey) {
-            toastr.error("请填写完整信息（名称、地址、Key）");
-            return;
-        }
-        
-        const data = { name, endpoint: endpoint.replace(/\/$/, ""), apiKey, model };
-        
-        if (editId) {
-            updateAPI(editId, data);
-        } else {
-            addAPI(data);
-        }
-        
-        hideForm();
-    });
-    
-    document.getElementById("btn-form-cancel")?.addEventListener("click", hideForm);
-    
-    document.getElementById("api-list-container")?.addEventListener("click", async (e) => {
-        const card = e.target.closest(".api-card");
-        if (!card) return;
-        
-        const id = card.dataset.id;
-        const settings = getSettings();
-        const api = settings.apiList.find(a => a.id === id);
-        
-        if (e.target.closest(".btn-use")) {
-            useAPI(id);
-        } else if (e.target.closest(".btn-test")) {
-            const statusDot = card.querySelector(".status-dot");
-            statusDot.className = "status-dot testing";
-            
-            const result = await testConnection(api);
-            api.lastTest = Date.now();
-            api.lastTestSuccess = result.success;
-            if (result.success) {
-                api.models = result.models;
-            }
-            saveSettings();
-            updateUI();
-            
-            toastr.info(result.message);
-        } else if (e.target.closest(".btn-edit")) {
-            showForm(id);
-        } else if (e.target.closest(".btn-toggle")) {
-            toggleEnabled(id);
-        } else if (e.target.closest(".btn-delete")) {
-            if (confirm("确定要删除 " + api.name + " 吗？")) {
-                deleteAPI(id);
-            }
-        }
-    });
-}
-
-jQuery(async () => {
-    loadSettings();
-    createUI();
-    bindEvents();
-    updateUI();
-    console.log("[多API轮换] 插件v2.0已加载");
-});}
-
-function switchToNext() {
-    const settings = getSettings();
-    const enabledList = settings.apiList.filter(api => api.enabled !== false);
-    if (enabledList.length <= 1) {
-        toastr.warning("只有一个可用API");
-        return;
-    }
-    settings.currentIndex = (settings.currentIndex + 1) % enabledList.length;
-    const newAPI = enabledList[settings.currentIndex];
-    applyAPI(newAPI);
-    saveSettings();
-    updateUI();
-    toastr.success("已切换到: " + newAPI.name);
-}
-
-function applyAPI(api) {
-    if (!api) return;
-    
-    const proxyInput = document.getElementById("openai_reverse_proxy");
-    if (proxyInput) {
-        proxyInput.value = api.endpoint;
-        proxyInput.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    
-    const keyInput = document.getElementById("api_key_openai");
-    if (keyInput) {
-        keyInput.value = api.apiKey;
-        keyInput.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    
-    setTimeout(() => {
-        const connectBtn = document.getElementById("api_button_openai");
-        if (connectBtn) connectBtn.click();
-    }, 100);
-}
-
-function addAPI(name, endpoint, apiKey) {
-    const settings = getSettings();
-    settings.apiList.push({
-        id: Date.now().toString(),
-        name: name,
-        endpoint: endpoint,
-        apiKey: apiKey,
-        enabled: true
-    });
-    saveSettings();
-    updateUI();
-    toastr.success("已添加: " + name);
-}
-
-function deleteAPI(id) {
-    const settings = getSettings();
-    const index = settings.apiList.findIndex(api => api.id === id);
-    if (index > -1) {
-        const name = settings.apiList[index].name;
-        settings.apiList.splice(index, 1);
-        if (settings.currentIndex >= settings.apiList.length) {
-            settings.currentIndex = 0;
-        }
-        saveSettings();
-        updateUI();
-        toastr.info("已删除: " + name);
-    }
-}
-
-function useAPI(id) {
-    const settings = getSettings();
-    const enabledList = settings.apiList.filter(api => api.enabled !== false);
-    const index = enabledList.findIndex(api => api.id === id);
-    if (index > -1) {
-        settings.currentIndex = index;
-        applyAPI(enabledList[index]);
-        saveSettings();
-        updateUI();
-        toastr.success("已切换到: " + enabledList[index].name);
-    }
-}
-
-function toggleEnabled(id) {
-    const settings = getSettings();
-    const api = settings.apiList.find(api => api.id === id);
-    if (api) {
-        api.enabled = !api.enabled;
-        saveSettings();
-        updateUI();
-    }
-}
-
-function createUI() {
-    const html = `
-    <div id="multi-api-switcher-panel">
-        <div class="inline-drawer">
-            <div class="inline-drawer-toggle inline-drawer-header">
-                <b>🔄 多API轮换</b>
-                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
             </div>
-            <div class="inline-drawer-content">
-                <div class="api-switcher-status">
-                    <span>当前: <strong id="current-api-display">未配置</strong></span>
-                    <button id="btn-switch-next" class="menu_button">
-                        <i class="fa-solid fa-forward"></i> 切换下一个
-                    </button>
-                </div>
-                
-                <div class="api-settings-section">
-                    <label>
-                        <input type="checkbox" id="chk-auto-switch">
-                        请求出错时自动切换
+        `;
+        document.body.appendChild(panel);
+
+        // 绑定事件
+        bindPanelEvents();
+        renderApiList();
+        updateStatus();
+    }
+
+    function bindPanelEvents() {
+        // 关闭按钮
+        document.getElementById('api-rotator-close').addEventListener('click', togglePanel);
+
+        // 点击背景关闭
+        document.getElementById('api-rotator-panel').addEventListener('click', (e) => {
+            if (e.target.id === 'api-rotator-panel') togglePanel();
+        });
+
+        // 启用开关
+        document.getElementById('api-rotator-enabled').addEventListener('change', (e) => {
+            state.enabled = e.target.checked;
+            saveState();
+            updateStatus();
+        });
+
+        // 模式选择
+        document.getElementById('api-rotator-mode').addEventListener('change', (e) => {
+            state.mode = e.target.value;
+            saveState();
+        });
+
+        // 添加按钮
+        document.getElementById('api-add-btn').addEventListener('click', addNewApi);
+
+        // 测试新API按钮
+        document.getElementById('api-test-new-btn').addEventListener('click', testNewApi);
+
+        // 导出
+        document.getElementById('api-export-btn').addEventListener('click', exportConfig);
+
+        // 导入
+        document.getElementById('api-import-btn').addEventListener('click', () => {
+            document.getElementById('api-import-file').click();
+        });
+        document.getElementById('api-import-file').addEventListener('change', importConfig);
+    }
+
+    function togglePanel() {
+        const panel = document.getElementById('api-rotator-panel');
+        if (panel) {
+            const isVisible = panel.style.display === 'flex';
+            panel.style.display = isVisible ? 'none' : 'flex';
+            if (!isVisible) {
+                renderApiList();
+                updateStatus();
+            }
+        }
+    }
+
+    function renderApiList() {
+        const container = document.getElementById('api-rotator-list');
+        if (!container) return;
+
+        if (state.apiList.length === 0) {
+            container.innerHTML = '<div class="api-rotator-empty">暂无API，请添加</div>';
+            return;
+        }
+
+        container.innerHTML = state.apiList.map((api, index) => `
+            <div class="api-item ${api.enabled ? '' : 'disabled'}" data-index="${index}">
+                <div class="api-item-main">
+                    <label class="api-rotator-switch small">
+                        <input type="checkbox" ${api.enabled ? 'checked' : ''} data-action="toggle" data-index="${index}">
+                        <span class="slider"></span>
                     </label>
-                </div>
-                
-                <h4>API列表</h4>
-                <div id="api-list-box" class="api-list-box"></div>
-                
-                <button id="btn-show-add-form" class="menu_button" style="width:100%;margin-top:10px;">
-                    <i class="fa-solid fa-plus"></i> 添加新API
-                </button>
-                
-                <div id="api-add-form" class="api-add-form" style="display:none;">
-                    <label>名称</label>
-                    <input type="text" id="input-api-name" placeholder="例如：中转站A">
-                    
-                    <label>API地址</label>
-                    <input type="text" id="input-api-endpoint" placeholder="https://api.example.com/v1">
-                    
-                    <label>API Key</label>
-                    <input type="text" id="input-api-key" placeholder="sk-xxx">
-                    
-                    <div class="api-add-form-buttons">
-                        <button id="btn-save-api" class="menu_button">
-                            <i class="fa-solid fa-check"></i> 保存
-                        </button>
-                        <button id="btn-cancel-add" class="menu_button">
-                            <i class="fa-solid fa-times"></i> 取消
-                        </button>
+                    <div class="api-item-info">
+                        <div class="api-item-name">${escapeHtml(api.name)}</div>
+                        <div class="api-item-endpoint">${escapeHtml(api.endpoint)}</div>
                     </div>
+                </div>
+                <div class="api-item-actions">
+                    <button data-action="test" data-index="${index}" title="测试连接">🔗</button>
+                    <button data-action="edit" data-index="${index}" title="编辑">✏️</button>
+                    <button data-action="up" data-index="${index}" title="上移" ${index === 0 ? 'disabled' : ''}>⬆️</button>
+                    <button data-action="down" data-index="${index}" title="下移" ${index === state.apiList.length - 1 ? 'disabled' : ''}>⬇️</button>
+                    <button data-action="delete" data-index="${index}" title="删除">🗑️</button>
                 </div>
             </div>
-        </div>
-    </div>`;
-    
-    const container = document.getElementById("extensions_settings");
-    if (container) {
-        container.insertAdjacentHTML("beforeend", html);
-    }
-}
+        `).join('');
 
-function updateUI() {
-    const settings = getSettings();
-    const currentAPI = getCurrentAPI();
-    
-    const display = document.getElementById("current-api-display");
-    if (display) {
-        display.textContent = currentAPI ? currentAPI.name : "未配置";
+        // 绑定列表事件
+        container.querySelectorAll('[data-action]').forEach(el => {
+            el.addEventListener('click', handleApiAction);
+            el.addEventListener('change', handleApiAction);
+        });
     }
-    
-    const autoChk = document.getElementById("chk-auto-switch");
-    if (autoChk) {
-        autoChk.checked = settings.autoSwitch;
-    }
-    
-    const listBox = document.getElementById("api-list-box");
-    if (listBox) {
-        if (settings.apiList.length === 0) {
-            listBox.innerHTML = '<div style="padding:20px;text-align:center;opacity:0.6;">还没有添加API</div>';
-        } else {
-            listBox.innerHTML = settings.apiList.map(api => {
-                const isCurrent = currentAPI && currentAPI.id === api.id;
-                const isEnabled = api.enabled !== false;
-                return `
-                <div class="api-item ${isCurrent ? 'current' : ''} ${!isEnabled ? 'disabled' : ''}" data-id="${api.id}">
-                    <div class="api-item-info">
-                        <div class="api-item-name">${isCurrent ? '✓ ' : ''}${api.name}</div>
-                        <div class="api-item-endpoint">${api.endpoint}</div>
-                    </div>
-                    <div class="api-item-actions">
-                        <button class="menu_button btn-use" title="使用" ${!isEnabled ? 'disabled' : ''}>
-                            <i class="fa-solid fa-play"></i>
-                        </button>
-                        <button class="menu_button btn-toggle" title="${isEnabled ? '禁用' : '启用'}">
-                            <i class="fa-solid fa-${isEnabled ? 'eye' : 'eye-slash'}"></i>
-                        </button>
-                        <button class="menu_button btn-delete" title="删除">
-                            <i class="fa-solid fa-trash"></i>
-                        </button>
-                    </div>
-                </div>`;
-            }).join('');
+
+    function handleApiAction(e) {
+        const action = e.target.dataset.action;
+        const index = parseInt(e.target.dataset.index);
+
+        switch (action) {
+            case 'toggle':
+                state.apiList[index].enabled = e.target.checked;
+                saveState();
+                renderApiList();
+                updateStatus();
+                break;
+
+            case 'test':
+                testApiConnection(index);
+                break;
+
+            case 'edit':
+                editApi(index);
+                break;
+
+            case 'up':
+                if (index > 0) {
+                    [state.apiList[index], state.apiList[index - 1]] = 
+                    [state.apiList[index - 1], state.apiList[index]];
+                    saveState();
+                    renderApiList();
+                }
+                break;
+
+            case 'down':
+                if (index < state.apiList.length - 1) {
+                    [state.apiList[index], state.apiList[index + 1]] = 
+                    [state.apiList[index + 1], state.apiList[index]];
+                    saveState();
+                    renderApiList();
+                }
+                break;
+
+            case 'delete':
+                if (confirm(`确定要删除 "${state.apiList[index].name}" 吗？`)) {
+                    state.apiList.splice(index, 1);
+                    saveState();
+                    renderApiList();
+                    updateStatus();
+                }
+                break;
         }
     }
-}
 
-function bindEvents() {
-    document.getElementById("btn-switch-next")?.addEventListener("click", () => {
-        switchToNext();
-    });
-    
-    document.getElementById("chk-auto-switch")?.addEventListener("change", (e) => {
-        getSettings().autoSwitch = e.target.checked;
-        saveSettings();
-    });
-    
-    document.getElementById("btn-show-add-form")?.addEventListener("click", () => {
-        document.getElementById("api-add-form").style.display = "block";
-        document.getElementById("btn-show-add-form").style.display = "none";
-    });
-    
-    document.getElementById("btn-cancel-add")?.addEventListener("click", () => {
-        document.getElementById("api-add-form").style.display = "none";
-        document.getElementById("btn-show-add-form").style.display = "block";
-        clearForm();
-    });
-    
-    document.getElementById("btn-save-api")?.addEventListener("click", () => {
-        const name = document.getElementById("input-api-name").value.trim();
-        const endpoint = document.getElementById("input-api-endpoint").value.trim();
-        const apiKey = document.getElementById("input-api-key").value.trim();
-        
-        if (!name || !endpoint || !apiKey) {
-            toastr.error("请填写完整信息");
+    function addNewApi() {
+        const name = document.getElementById('api-new-name').value.trim();
+        const endpoint = document.getElementById('api-new-endpoint').value.trim();
+        const apiKey = document.getElementById('api-new-key').value.trim();
+
+        if (!name) {
+            showNotification('请输入API名称', 'error');
             return;
         }
-        
-        addAPI(name, endpoint, apiKey);
-        document.getElementById("api-add-form").style.display = "none";
-        document.getElementById("btn-show-add-form").style.display = "block";
-        clearForm();
-    });
-    
-    document.getElementById("api-list-box")?.addEventListener("click", (e) => {
-        const item = e.target.closest(".api-item");
-        if (!item) return;
-        const id = item.dataset.id;
-        
-        if (e.target.closest(".btn-use")) {
-            useAPI(id);
-        } else if (e.target.closest(".btn-toggle")) {
-            toggleEnabled(id);
-        } else if (e.target.closest(".btn-delete")) {
-            if (confirm("确定删除？")) {
-                deleteAPI(id);
-            }
+        if (!endpoint) {
+            showNotification('请输入API地址', 'error');
+            return;
         }
-    });
-}
 
-function clearForm() {
-    document.getElementById("input-api-name").value = "";
-    document.getElementById("input-api-endpoint").value = "";
-    document.getElementById("input-api-key").value = "";
-}
+        state.apiList.push({
+            name,
+            endpoint,
+            apiKey,
+            enabled: true
+        });
 
-jQuery(async () => {
-    loadSettings();
-    createUI();
-    bindEvents();
-    updateUI();
-    console.log("[多API轮换] 插件已加载");
-});
+        saveState();
+        renderApiList();
+        updateStatus();
+
+        // 清空输入
+        document.getElementById('api-new-name').value = '';
+        document.getElementById('api-new-endpoint').value = '';
+        document.getElementById('api-new-key').value = '';
+
+        showNotification(`已添加: ${name}`, 'success');
+    }
+
+    function editApi(index) {
+        const api = state.apiList[index];
+        
+        const newName = prompt('API名称:', api.name);
+        if (newName === null) return;
+
+        const newEndpoint = prompt('API地址:', api.endpoint);
+        if (newEndpoint === null) return;
+
+        const newKey = prompt('API密钥:', api.apiKey || '');
+        if (newKey === null) return;
+
+        state.apiList[index] = {
+            ...api,
+            name: newName.trim() || api.name,
+            endpoint: newEndpoint.trim() || api.endpoint,
+            apiKey: newKey.trim()
+        };
+
+        saveState();
+        renderApiList();
+        showNotification('已更新配置', 'success');
+    }
+
+    async function testApiConnection(index) {
+        const api = state.apiList[index];
+        await doTestConnection(api);
+    }
+
+    async function testNewApi() {
+        const name = document.getElementById('api-new-name').value.trim() || '新API';
+        const endpoint = document.getElementById('api-new-endpoint').value.trim();
+        const apiKey = document.getElementById('api-new-key').value.trim();
+
+        if (!endpoint) {
+            showNotification('请输入API地址', 'error');
+            return;
+        }
+
+        await doTestConnection({ name, endpoint, apiKey });
+    }
+
+    async function doTestConnection(api) {
+        showNotification(`正在测试: ${api.name}...`, 'info');
+
+        try {
+            const testUrl = api.endpoint.replace(/\/+$/, '') + '/v1/models';
+            const response = await fetch(testUrl, {
+                method: 'GET',
+                headers: api.apiKey ? {
+                    'Authorization': `Bearer ${api.apiKey}`
+                } : {}
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                const modelCount = data.data ? data.data.length : 0;
+                showNotification(`✅ ${api.name} 连接成功！发现 ${modelCount} 个模型`, 'success');
+            } else {
+                const errorText = await response.text();
+                showNotification(`❌ ${api.name} 连接失败: ${response.status}`, 'error');
+            }
+        } catch (e) {
+            showNotification(`❌ ${api.name} 连接错误: ${e.message}`, 'error');
+        }
+    }
+
+    function updateStatus() {
+        const statusEl = document.getElementById('api-rotator-status');
+        if (!statusEl) return;
+
+        const enabledCount = state.apiList.filter(a => a.enabled).length;
+        const totalCount = state.apiList.length;
+
+        if (!state.enabled) {
+            statusEl.textContent = `已禁用 | 共 ${totalCount} 个API`;
+            statusEl.className = 'api-rotator-status disabled';
+        } else if (enabledCount === 0) {
+            statusEl.textContent = `无可用API | 共 ${totalCount} 个`;
+            statusEl.className = 'api-rotator-status warning';
+        } else {
+            statusEl.textContent = `已启用 ${enabledCount}/${totalCount} 个API | ${state.mode === 'random' ? '随机' : '顺序'}模式`;
+            statusEl.className = 'api-rotator-status active';
+        }
+    }
+
+    function updateCurrentDisplay(name) {
+        const statusEl = document.getElementById('api-rotator-status');
+        if (statusEl && state.enabled) {
+            const enabledCount = state.apiList.filter(a => a.enabled).length;
+            statusEl.textContent = `当前: ${name} | ${enabledCount} 个可用`;
+        }
+    }
+
+    // ========== 导入导出 ==========
+    function exportConfig() {
+        const data = {
+            version: '1.0',
+            exportTime: new Date().toISOString(),
+            config: {
+                enabled: state.enabled,
+                mode: state.mode,
+                apiList: state.apiList.map(api => ({
+                    name: api.name,
+                    endpoint: api.endpoint,
+                    apiKey: api.apiKey,
+                    enabled: api.enabled
+                }))
+            }
+        };
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `api-rotator-config-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        showNotification('配置已导出', 'success');
+    }
+
+    function importConfig(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const data = JSON.parse(event.target.result);
+                
+                if (data.config && data.config.apiList) {
+                    const importCount = data.config.apiList.length;
+                    
+                    if (confirm(`确定要导入 ${importCount} 个API配置吗？\n（将与现有配置合并）`)) {
+                        // 合并配置
+                        data.config.apiList.forEach(api => {
+                            const exists = state.apiList.some(
+                                a => a.endpoint === api.endpoint && a.name === api.name
+                            );
+                            if (!exists) {
+                                state.apiList.push(api);
+                            }
+                        });
+
+                        saveState();
+                        renderApiList();
+                        updateStatus();
+                        showNotification(`已导入 ${importCount} 个API配置`, 'success');
+                    }
+                } else {
+                    showNotification('无效的配置文件格式', 'error');
+                }
+            } catch (err) {
+                showNotification('配置文件解析失败: ' + err.message, 'error');
+            }
+        };
+        reader.readAsText(file);
+        
+        // 清空input以便重复导入同一文件
+        e.target.value = '';
+    }
+
+    // ========== 工具函数 ==========
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function showNotification(message, type = 'info') {
+        // 尝试使用SillyTavern的toastr
+        if (typeof toastr !== 'undefined') {
+            switch (type) {
+                case 'success': toastr.success(message); break;
+                case 'error': toastr.error(message); break;
+                case 'warning': toastr.warning(message); break;
+                default: toastr.info(message);
+            }
+            return;
+        }
+
+        // 备用：创建自定义通知
+        const notification = document.createElement('div');
+        notification.className = `api-rotator-notification ${type}`;
+        notification.textContent = message;
+        document.body.appendChild(notification);
+
+        setTimeout(() => {
+            notification.classList.add('fade-out');
+            setTimeout(() => notification.remove(), 300);
+        }, 3000);
+    }
+
+    // ========== 初始化 ==========
+    function init() {
+        console.log(`[${PLUGIN_NAME}] 正在初始化...`);
+        
+        loadState();
+        createUI();
+        initRequestInterceptor();
+        
+        console.log(`[${PLUGIN_NAME}] 初始化完成，已加载 ${state.apiList.length} 个API配置`);
+    }
+
+    // 等待DOM加载
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        // 延迟一点确保酒馆加载完成
+        setTimeout(init, 1000);
+    }
+
+    // 暴露给全局
+    window.ApiRotator = {
+        open: togglePanel,
+        getState: () => state,
+        addApi: (name, endpoint, apiKey) => {
+            state.apiList.push({ name, endpoint, apiKey, enabled: true });
+            saveState();
+            renderApiList();
+        }
+    };
+
+})();

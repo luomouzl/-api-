@@ -1,30 +1,38 @@
-/* API轮询切换器样式 */
-
-/* 浮动按钮 */
-#api-rotator-float-btn {
+/* 浮动按钮 - 右下角紫色圆形 */
+#api-rotator-float {
     position: fixed;
-    bottom: 80px;
     right: 20px;
-    width: 50px;
-    height: 50px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    bottom: 100px;
+    width: 56px;
+    height: 56px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 24px;
+    font-size: 28px;
     cursor: pointer;
-    z-index: 9999;
-    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    transition: transform 0.3s, box-shadow 0.3s;
+    z-index: 99999;
+    box-shadow: 0 4px 20px rgba(102, 126, 234, 0.5);
+    transition: transform 0.2s;
 }
 
-#api-rotator-float-btn:hover {
+#api-rotator-float:hover {
     transform: scale(1.1);
-    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
 }
 
-/* 主面板 */
+/* 顶栏按钮 */
+#api-rotator-btn {
+    padding: 6px 12px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    margin-left: 10px;
+}
+
+/* 面板遮罩 */
 #api-rotator-panel {
     display: none;
     position: fixed;
@@ -32,177 +40,224 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.75);
-    z-index: 10001;
+    background: rgba(0,0,0,0.7);
+    z-index: 100000;
     justify-content: center;
     align-items: center;
-    backdrop-filter: blur(5px);
 }
 
-.api-rotator-container {
-    background: var(--SmartThemeBlurTintColor, #1e1e2e);
-    border: 1px solid var(--SmartThemeBorderColor, #444);
-    border-radius: 16px;
-    width: 95%;
-    max-width: 550px;
-    max-height: 85vh;
+/* 面板主体 */
+.ar-box {
+    background: #1a1a2e;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 500px;
+    max-height: 80vh;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    border: 1px solid #333;
 }
 
 /* 头部 */
-.api-rotator-header {
+.ar-header {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    padding: 14px 18px;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 16px 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
+    font-size: 16px;
+    font-weight: bold;
 }
 
-.api-rotator-header h3 {
-    margin: 0;
-    font-size: 18px;
-    font-weight: 600;
-}
-
-.api-rotator-close-btn {
-    background: rgba(255, 255, 255, 0.2);
+.ar-close {
+    background: rgba(255,255,255,0.2);
     border: none;
     color: white;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
-    font-size: 20px;
+    font-size: 16px;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.3s;
 }
 
-.api-rotator-close-btn:hover {
-    background: rgba(255, 255, 255, 0.3);
+.ar-close:hover {
+    background: rgba(255,255,255,0.3);
 }
 
-/* 区块 */
-.api-rotator-section {
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor, #333);
+/* 内容区 */
+.ar-body {
+    padding: 16px;
     overflow-y: auto;
+    flex: 1;
 }
 
-.api-rotator-section:last-child {
-    border-bottom: none;
+/* 控制行 */
+.ar-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
 }
 
-.api-rotator-section h4 {
-    margin: 0 0 12px 0;
+.ar-row label {
+    color: #fff;
     font-size: 14px;
-    color: var(--SmartThemeBodyColor, #ccc);
-    font-weight: 600;
-}
-
-/* 控制区 */
-.api-rotator-controls {
     display: flex;
     align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
+    gap: 8px;
 }
 
-.api-rotator-controls span {
-    color: var(--SmartThemeBodyColor, #fff);
-    font-size: 14px;
+.ar-row select {
+    padding: 6px 10px;
+    background: #2a2a4a;
+    color: #fff;
+    border: 1px solid #444;
+    border-radius: 6px;
 }
 
-#api-rotator-mode {
-    padding: 8px 12px;
+/* 状态栏 */
+.ar-status {
+    padding: 10px;
     border-radius: 8px;
-    border: 1px solid var(--SmartThemeBorderColor, #444);
-    background: var(--SmartThemeBlurTintColor, #2a2a3e);
-    color: var(--SmartThemeBodyColor, #fff);
-    font-size: 14px;
-    cursor: pointer;
-    margin-left: auto;
-}
-
-/* 开关样式 */
-.api-rotator-switch {
-    position: relative;
-    display: inline-block;
-    width: 48px;
-    height: 26px;
-}
-
-.api-rotator-switch.small {
-    width: 40px;
-    height: 22px;
-}
-
-.api-rotator-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-}
-
-.api-rotator-switch .slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: #444;
-    transition: 0.3s;
-    border-radius: 26px;
-}
-
-.api-rotator-switch .slider:before {
-    position: absolute;
-    content: "";
-    height: 20px;
-    width: 20px;
-    left: 3px;
-    bottom: 3px;
-    background-color: white;
-    transition: 0.3s;
-    border-radius: 50%;
-}
-
-.api-rotator-switch.small .slider:before {
-    height: 16px;
-    width: 16px;
-}
-
-.api-rotator-switch input:checked + .slider {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.api-rotator-switch input:checked + .slider:before {
-    transform: translateX(22px);
-}
-
-.api-rotator-switch.small input:checked + .slider:before {
-    transform: translateX(18px);
-}
-
-/* 状态显示 */
-.api-rotator-status {
-    padding: 10px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    margin-top: 12px;
     text-align: center;
-    background: rgba(102, 126, 234, 0.2);
-    color: #a0aeff;
+    font-size: 13px;
+    margin-bottom: 16px;
+    background: #2a2a4a;
+    color: #aaa;
 }
 
-.api-rotator-status.active {
+.ar-status.on {
     background: rgba(46, 204, 113, 0.2);
     color: #5dff9a;
 }
 
-.api-rotator-status.warning {
+.ar-status.off {
+    background: rgba(150, 150, 150, 0.2);
+    color: #999;
+}
+
+.ar-status.warn {
+    background: rgba(241, 196, 15, 0.2);
+    color: #f1c40f;
+}
+
+/* 分区 */
+.ar-section {
+    margin-bottom: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #333;
+}
+
+.ar-title {
+    color: #888;
+    font-size: 13px;
+    margin-bottom: 10px;
+}
+
+/* 输入框 */
+.ar-section input[type="text"],
+.ar-section input[type="password"] {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 8px;
+    background: #2a2a4a;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 14px;
+    box-sizing: border-box;
+}
+
+.ar-section input:focus {
+    border-color: #667eea;
+    outline: none;
+}
+
+/* 按钮组 */
+.ar-btns {
+    display: flex;
+    gap: 10px;
+}
+
+.ar-btns button {
+    flex: 1;
+    padding: 10px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.ar-btns button:hover {
+    opacity: 0.9;
+}
+
+/* API列表 */
+#ar-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.ar-empty {
+    color: #666;
+    text-align: center;
+    padding: 20px;
+}
+
+.ar-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    background: #2a2a4a;
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.ar-item-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.ar-item-left input {
+    width: 18px;
+    height: 18px;
+}
+
+.ar-item-name {
+    color: #fff;
+    font-size: 14px;
+}
+
+.ar-item-url {
+    color: #888;
+    font-size: 12px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ar-item-right {
+    display: flex;
+    gap: 6px;
+}
+
+.ar-item-right button {
+    padding: 5px 10px;
+    background: #444;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.ar-item-right button:hover {
+    background: #555;
+}

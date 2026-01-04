@@ -1,5 +1,6 @@
-import { saveSettingsDebounced } from "../../../../script.js";
+import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
 import { extension_settings } from "../../../extensions.js";
+import { oai_settings, saveOpenAISettings } from "../../../openai.js";
 
 const extensionName = "api-rotator";
 const defaultSettings = {
@@ -10,11 +11,12 @@ const defaultSettings = {
     rotateMode: "round-robin",
     autoSwitch: true,
     showNotification: true,
-    retryPerAPI: 1,      // 每个API失败后重试次数
-    maxAPIRetries: 3     // 最多尝试几个不同的API
+    retryPerAPI: 1,
+    maxAPIRetries: 3
 };
 
 let lastUsedIndex = -1;
+let requestCount = 0;
 
 function loadSettings() {
     if (!extension_settings[extensionName]) {
@@ -93,6 +95,62 @@ function getAPIForRequest() {
     }
 }
 
+// 应用API到SillyTavern的设置
+function applyAPIToST(api) {
+    if (!api) return false;
+    
+    try {
+        // 修改 oai_settings 对象
+        if (typeof oai_settings !== 'undefined') {
+            oai_settings.reverse_proxy = api.endpoint;
+            oai_settings.proxy_password = api.apiKey || '';
+            
+            if (api.model) {
+                oai_settings.openai_model = api.model;
+            }
+            
+            console.log(`[API轮询] 已应用: ${api.name} (${api.model || '默认模型'})`);
+            return true;
+        }
+    } catch (e) {
+        console.error('[API轮询] 应用API失败:', e);
+    }
+    
+    return false;
+}
+
+// 同时更新UI显示
+function applyAPIToUI(api) {
+    if (!api) return;
+    
+    const proxy = document.getElementById("openai_reverse_proxy");
+    if (proxy) {
+        proxy.value = api.endpoint;
+    }
+    
+    const key = document.getElementById("api_key_openai");
+    if (key) {
+        key.value = api.apiKey || "";
+    }
+    
+    if (api.model) {
+        const sel = document.getElementById("model_openai_select");
+        if (sel) {
+            let exists = false;
+            for (const opt of sel.options) {
+                if (opt.value === api.model) { exists = true; break; }
+            }
+            if (!exists) {
+                const opt = document.createElement("option");
+                opt.value = api.model;
+                opt.textContent = api.model;
+                sel.appendChild(opt);
+            }
+            sel.value = api.model;
+        }
+    }
+}
+
 async function fetchModels(endpoint, apiKey) {
     try {
         const base = endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
@@ -109,47 +167,6 @@ async function fetchModels(endpoint, apiKey) {
     return [];
 }
 
-function applyAPI(api) {
-    if (!api) return;
-    
-    const proxy = document.getElementById("openai_reverse_proxy");
-    if (proxy) {
-        proxy.value = api.endpoint;
-        proxy.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    
-    const key = document.getElementById("api_key_openai");
-    if (key) {
-        key.value = api.apiKey || "";
-        key.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    
-    if (api.model) {
-        setTimeout(() => {
-            const sel = document.getElementById("model_openai_select");
-            if (sel) {
-                let exists = false;
-                for (const opt of sel.options) {
-                    if (opt.value === api.model) { exists = true; break; }
-                }
-                if (!exists) {
-                    const opt = document.createElement("option");
-                    opt.value = api.model;
-                    opt.textContent = api.model;
-                    sel.appendChild(opt);
-                }
-                sel.value = api.model;
-                sel.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-        }, 200);
-    }
-    
-    setTimeout(() => {
-        const btn = document.getElementById("api_button_openai");
-        if (btn) btn.click();
-    }, 100);
-}
-
 function switchNext() {
     const list = getEnabledAPIs();
     if (list.length < 2) {
@@ -157,7 +174,8 @@ function switchNext() {
         return;
     }
     const api = switchToNextAPI();
-    applyAPI(api);
+    applyAPIToST(api);
+    applyAPIToUI(api);
     updateUI();
     toastr.success("已切换: " + api.name);
 }
@@ -173,7 +191,8 @@ function useAPI(id) {
         lastUsedIndex = idx;
     }
     saveSettings();
-    applyAPI(api);
+    applyAPIToST(api);
+    applyAPIToUI(api);
     updateUI();
     toastr.success("已切换: " + api.name);
 }
@@ -289,149 +308,88 @@ function importConfig(file) {
     reader.readAsText(file);
 }
 
-function showAPINotification(api, retryInfo) {
+function showAPINotification(api) {
     const s = getSettings();
     if (!s.showNotification) return;
     
     const modelInfo = api.model ? ` [${api.model}]` : "";
-    const retryText = retryInfo ? ` (${retryInfo})` : "";
-    toastr.info(`🔄 ${api.name}${modelInfo}${retryText}`, "正在使用", {
+    toastr.info(`🔄 ${api.name}${modelInfo}`, "正在使用", {
         timeOut: 2000,
         positionClass: "toast-top-center",
         preventDuplicates: false
     });
 }
 
-// 执行单次请求
-async function doRequest(originalFetch, url, options, api) {
-    const base = api.endpoint.replace(/\/+$/, "").replace(/\/v1$/, "");
-    const urlStr = url.toString();
-    const path = urlStr.includes("/v1/chat/completions") ? "/v1/chat/completions" : "/v1/completions";
-    const newUrl = base + path;
-    
-    const newOpts = JSON.parse(JSON.stringify(options || {}));
-    newOpts.headers = newOpts.headers || {};
-    if (api.apiKey) newOpts.headers["Authorization"] = "Bearer " + api.apiKey;
-    
-    if (api.model && newOpts.body) {
-        try {
-            const body = JSON.parse(newOpts.body);
-            body.model = api.model;
-            newOpts.body = JSON.stringify(body);
-        } catch (e) {}
-    }
-    
-    return await originalFetch.call(window, newUrl, newOpts);
-}
-
-function setupInterceptor() {
-    const originalFetch = window.fetch;
-    
-    window.fetch = async function(url, options) {
+// 设置事件监听 - 在生成前切换API
+function setupEventHooks() {
+    // 监听生成开始事件
+    eventSource.on(event_types.GENERATION_STARTED, () => {
         const s = getSettings();
-        if (!s.enabled) return originalFetch.apply(this, arguments);
-        
-        const urlStr = url.toString();
-        if (!urlStr.includes("/v1/chat/completions") && !urlStr.includes("/v1/completions")) {
-            return originalFetch.apply(this, arguments);
-        }
+        if (!s.enabled) return;
         
         const list = getEnabledAPIs();
-        if (list.length === 0) return originalFetch.apply(this, arguments);
+        if (list.length === 0) return;
         
-        let api = getAPIForRequest();
-        if (!api) return originalFetch.apply(this, arguments);
+        const api = getAPIForRequest();
+        if (!api) return;
         
-        const triedAPIs = new Set();
-        const maxAPIRetries = Math.min(s.maxAPIRetries || 3, list.length);
-        let apiSwitchCount = 0;
+        requestCount++;
+        console.log(`[API轮询] 请求 #${requestCount} - 使用: ${api.name}`);
         
-        while (apiSwitchCount < maxAPIRetries) {
-            const retryPerAPI = s.retryPerAPI || 1;
-            let currentRetry = 0;
+        applyAPIToST(api);
+        showAPINotification(api);
+        updateUI();
+    });
+    
+    // 监听生成结束事件（用于检测失败并重试）
+    eventSource.on(event_types.GENERATION_ENDED, () => {
+        // 可以在这里处理成功后的逻辑
+    });
+    
+    // 监听生成错误事件
+    eventSource.on(event_types.GENERATION_ERROR, (error) => {
+        const s = getSettings();
+        if (!s.enabled || !s.autoSwitch) return;
+        
+        const list = getEnabledAPIs();
+        if (list.length <= 1) return;
+        
+        const currentAPI = getCurrentAPI();
+        const nextAPI = switchToNextAPI();
+        
+        if (nextAPI && nextAPI.id !== currentAPI?.id) {
+            toastr.warning(`${currentAPI?.name || 'API'} 失败，已切换到 ${nextAPI.name}`, "", { timeOut: 2000 });
+            applyAPIToST(nextAPI);
+            applyAPIToUI(nextAPI);
+        }
+    });
+    
+    console.log("[API轮询] 事件监听已设置");
+}
+
+// 备用方案：拦截jQuery的ajax请求
+function setupAjaxInterceptor() {
+    if (typeof jQuery === 'undefined') return;
+    
+    jQuery(document).ajaxSend((event, jqXHR, settings) => {
+        const s = getSettings();
+        if (!s.enabled) return;
+        
+        // 检查是否是聊天完成请求
+        if (settings.url && (
+            settings.url.includes('/generate') ||
+            settings.url.includes('/chat') ||
+            settings.url.includes('/api/backends')
+        )) {
+            const list = getEnabledAPIs();
+            if (list.length === 0) return;
             
-            // 对当前API尝试多次
-            while (currentRetry <= retryPerAPI) {
-                try {
-                    const isRetry = currentRetry > 0;
-                    const retryInfo = isRetry ? `重试 ${currentRetry}/${retryPerAPI}` : null;
-                    
-                    console.log(`[API轮询] ${api.name}${isRetry ? ' (重试' + currentRetry + ')' : ''}`);
-                    
-                    // 更新UI
-                    const el = document.getElementById("ar-current");
-                    if (el) el.textContent = api.name + (api.model ? " (" + api.model + ")" : "") + (isRetry ? " 重试中..." : "");
-                    
-                    // 显示通知
-                    showAPINotification(api, retryInfo);
-                    
-                    const res = await doRequest(originalFetch, url, options, api);
-                    
-                    if (res.ok) {
-                        // 成功，更新UI并返回
-                        if (el) el.textContent = api.name + (api.model ? " (" + api.model + ")" : "");
-                        return res;
-                    }
-                    
-                    // 请求失败
-                    console.warn(`[API轮询] ${api.name} 返回错误: ${res.status}`);
-                    
-                    if (currentRetry < retryPerAPI) {
-                        // 还有重试次数，继续重试当前API
-                        toastr.warning(`${api.name} 失败(${res.status})，正在重试...`, "", { timeOut: 1500 });
-                        currentRetry++;
-                        // 等待一小段时间再重试
-                        await new Promise(r => setTimeout(r, 500));
-                        continue;
-                    }
-                    
-                    // 当前API重试次数用完，准备切换
-                    break;
-                    
-                } catch (e) {
-                    console.error(`[API轮询] ${api.name} 出错:`, e);
-                    
-                    if (currentRetry < retryPerAPI) {
-                        toastr.warning(`${api.name} 出错，正在重试...`, "", { timeOut: 1500 });
-                        currentRetry++;
-                        await new Promise(r => setTimeout(r, 500));
-                        continue;
-                    }
-                    
-                    break;
-                }
-            }
-            
-            // 当前API彻底失败，尝试切换
-            triedAPIs.add(api.id);
-            apiSwitchCount++;
-            
-            if (!s.autoSwitch || list.length <= 1) {
-                toastr.error(`${api.name} 请求失败`);
-                throw new Error(`${api.name} 请求失败`);
-            }
-            
-            // 找下一个没试过的API
-            let foundNext = false;
-            for (let i = 0; i < list.length; i++) {
-                const nextApi = switchToNextAPI();
-                if (!triedAPIs.has(nextApi.id)) {
-                    toastr.warning(`${api.name} 失败，切换到 ${nextApi.name}`, "", { timeOut: 2000 });
-                    api = nextApi;
-                    foundNext = true;
-                    break;
-                }
-            }
-            
-            if (!foundNext) {
-                toastr.error("所有API都已尝试，全部失败");
-                throw new Error("所有API都失败");
+            const api = getCurrentAPI();
+            if (api) {
+                applyAPIToST(api);
             }
         }
-        
-        toastr.error("超过最大重试次数");
-        throw new Error("超过最大重试次数");
-    };
+    });
 }
 
 function esc(text) {
@@ -472,44 +430,23 @@ function createUI() {
             
             <div class="ar-section-title">重试设置</div>
             <div class="ar-row">
-                <label>
-                    <input type="checkbox" id="ar-auto"> 失败自动切换API
-                </label>
+                <label><input type="checkbox" id="ar-auto"> 失败自动切换API</label>
             </div>
-            <div class="ar-row">
-                <span>同一API重试次数:</span>
-                <select id="ar-retry-per" class="ar-select-small">
-                    <option value="0">0次（直接切换）</option>
-                    <option value="1">1次</option>
-                    <option value="2">2次</option>
-                    <option value="3">3次</option>
-                </select>
-            </div>
-            <div class="ar-row">
-                <span>最多尝试API数:</span>
-                <select id="ar-max-api" class="ar-select-small">
-                    <option value="2">2个</option>
-                    <option value="3">3个</option>
-                    <option value="5">5个</option>
-                    <option value="10">全部</option>
-                </select>
-            </div>
-            
             <div class="ar-row">
                 <label><input type="checkbox" id="ar-notify"> 显示切换提示</label>
             </div>
             
-            <div id="ar-stats" class="ar-stats">0/0</div>
+            <div id="ar-stats" class="ar-stats">0/0 | 请求: 0</div>
             <div id="ar-list" class="ar-list"></div>
             
             <button id="ar-add-btn" class="menu_button ar-wide">➕ 添加API</button>
             <div id="ar-form" style="display:none" class="ar-form">
                 <input id="ar-f-name" placeholder="名称（备注）">
-                <input id="ar-f-endpoint" placeholder="API地址">
-                <input id="ar-f-key" type="password" placeholder="密钥">
+                <input id="ar-f-endpoint" placeholder="API地址 (如: https://api.example.com/v1)">
+                <input id="ar-f-key" type="password" placeholder="API密钥">
                 <div class="ar-row">
-                    <input id="ar-f-model" placeholder="模型(可选)">
-                    <button id="ar-f-fetch" class="menu_button">🔄</button>
+                    <input id="ar-f-model" placeholder="模型名称(可选)">
+                    <button id="ar-f-fetch" class="menu_button">🔄 获取</button>
                 </div>
                 <select id="ar-f-models" style="display:none"></select>
                 <div class="ar-row">
@@ -522,6 +459,9 @@ function createUI() {
                 <button id="ar-export" class="menu_button">📤 导出</button>
                 <button id="ar-import" class="menu_button">📥 导入</button>
                 <input type="file" id="ar-file" accept=".json" style="display:none">
+            </div>
+            <div class="ar-hint">
+                提示: 需要在官方设置中选择 Chat Completion API 类型
             </div>
         </div>
     </div>
@@ -549,20 +489,13 @@ function updateUI() {
     const notify = document.getElementById("ar-notify");
     if (notify) notify.checked = s.showNotification;
     
-    const retryPer = document.getElementById("ar-retry-per");
-    if (retryPer) retryPer.value = s.retryPerAPI.toString();
-    
-    const maxAPI = document.getElementById("ar-max-api");
-    if (maxAPI) maxAPI.value = s.maxAPIRetries.toString();
-    
     const curEl = document.getElementById("ar-current");
     if (curEl) curEl.textContent = cur ? cur.name + (cur.model ? " (" + cur.model + ")" : "") : "无";
     
     const stats = document.getElementById("ar-stats");
     if (stats) {
         const modeText = s.switchMode === "every-request" ? "每次切换" : "固定模式";
-        const retryText = `失败重试${s.retryPerAPI}次`;
-        stats.textContent = `${list.length}/${s.apiList.length} 已启用 | ${modeText} | ${retryText}`;
+        stats.textContent = `${list.length}/${s.apiList.length} 已启用 | ${modeText} | 请求: ${requestCount}`;
     }
     
     const listEl = document.getElementById("ar-list");
@@ -650,19 +583,6 @@ function bindEvents() {
         s.showNotification = e.target.checked;
         saveSettings();
         toastr.info(s.showNotification ? "切换提示已开启" : "切换提示已关闭");
-    });
-    
-    document.getElementById("ar-retry-per")?.addEventListener("change", e => {
-        s.retryPerAPI = parseInt(e.target.value) || 1;
-        saveSettings();
-        updateUI();
-        toastr.info(`同一API失败后重试 ${s.retryPerAPI} 次`);
-    });
-    
-    document.getElementById("ar-max-api")?.addEventListener("change", e => {
-        s.maxAPIRetries = parseInt(e.target.value) || 3;
-        saveSettings();
-        toastr.info(`最多尝试 ${s.maxAPIRetries} 个API`);
     });
     
     document.getElementById("ar-next")?.addEventListener("click", switchNext);
@@ -754,6 +674,17 @@ jQuery(async () => {
     createUI();
     updateUI();
     bindEvents();
-    setupInterceptor();
-    console.log("[API轮询] 已加载");
+    
+    // 设置事件监听
+    setupEventHooks();
+    setupAjaxInterceptor();
+    
+    // 初始化时应用当前API
+    const currentAPI = getCurrentAPI();
+    if (currentAPI && getSettings().enabled) {
+        applyAPIToST(currentAPI);
+        console.log("[API轮询] 初始API:", currentAPI.name);
+    }
+    
+    console.log("[API轮询] 已加载 (事件模式)");
 });

@@ -5,7 +5,7 @@
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "你的名字",
-    "version": "1.0.0",
-    "description": "管理多个API并支持一键切换"
+    "author": "Assistant",
+    "version": "2.0.0",
+    "description": "管理多个API，支持测试连接、模型选择、一键切换"
 }
